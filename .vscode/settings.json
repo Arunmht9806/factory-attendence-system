@@ -1,0 +1,24 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^php -l api\\.php; php -l index\\.php; php -l login\\.php; php -l logout\\.php$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^php -l index\\.php; php -l punch\\.php; php -l api\\.php$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^php -l api\\.php; php -l punch\\.php; php -l index\\.php$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^php -l api\\.php; php -l index\\.php$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^php -l punch\\.php; php -l api\\.php$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

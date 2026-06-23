@@ -1,0 +1,187 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "composer-install-laravel",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"Set-Location laravel_app; php ..\\composer.phar install"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "php-lint-laravel-bridge",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"php -l laravel_app\\app\\Http\\Controllers\\LegacyApiController.php; php -l laravel_app\\routes\\web.php"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "php-lint-laravel-bridge-2",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"php -l laravel_app\\app\\Http\\Controllers\\LegacyApiController.php; php -l punch.php"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "composer-install-laravel-local-cache",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"Set-Location laravel_app; $env:COMPOSER_CACHE_DIR = (Join-Path (Get-Location) '.composer-cache'); php ..\\composer.phar install --prefer-dist --no-interaction"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "composer-install-laravel-local-cache-2",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"Set-Location laravel_app; $env:COMPOSER_CACHE_DIR = \"$PWD/.composer-cache\"; php ..\\composer.phar install --prefer-dist --no-interaction"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "composer-install-laravel-local-cache-3",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"Set-Location laravel_app; $env:COMPOSER_CACHE_DIR = (Join-Path $PWD \".composer-cache\"); php ..\\composer.phar install --prefer-dist --no-interaction"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "laravel-key-generate",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"Set-Location laravel_app; php artisan key:generate --force"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "php-lint-laravel-controller-final",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"php -l laravel_app\\app\\Http\\Controllers\\LegacyApiController.php"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "remove-laravel-folder",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"Remove-Item 'C:\\xampp\\htdocs\\factory_attendance_system\\laravel_app' -Recurse -Force"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "lint-viewer-restrictions",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"php -l api.php; php -l index.php; php -l punch.php"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "lint-viewer-full-visibility",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"php -l api.php; php -l index.php; php -l punch.php"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "lint-auto-credentials",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"php -l api.php; php -l punch.php"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "lint-punch-terminal-login",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"php -l punch.php"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "lint-api-employee-login",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"php -l api.php"
+			],
+			"isBackground": false
+		}
+	]
+}
