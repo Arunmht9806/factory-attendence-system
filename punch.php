@@ -173,16 +173,24 @@ if (empty($_SESSION['user_id']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
                         <span class="text-[10px] text-slate-500 mt-1 block">Follows your computer clock. Max 6 sessions/day.</span>
                     </div>
 
+                    <div>
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">5. GPS Tracking Status</label>
+                        <div id="terminal-gps-status" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-3 text-slate-300 font-mono text-xs leading-5">
+                            Waiting for a GPS lock. Required for regular punch; optional for vehicle punch.
+                        </div>
+                        <span class="text-[10px] text-slate-500 mt-1 block">Regular punch captures location for Admin/HR visibility. Vehicle punch can proceed without GPS.</span>
+                    </div>
+
                     <!-- Step 5: vehicle -->
                     <div>
-                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">5. Vehicle Number <span class="text-slate-600 font-normal">(for vehicle punch)</span></label>
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">6. Vehicle Number <span class="text-slate-600 font-normal">(for vehicle punch)</span></label>
                         <input type="text" id="terminal-vehicle-name" placeholder="e.g. BA 1 CHA 1234"
                                class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition font-mono text-sm">
                     </div>
 
                     <!-- Step 6: purpose -->
                     <div>
-                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">6. Vehicle Purpose <span class="text-slate-600 font-normal">(for vehicle punch)</span></label>
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">7. Vehicle Purpose <span class="text-slate-600 font-normal">(for vehicle punch)</span></label>
                         <input type="text" id="terminal-vehicle-purpose" placeholder="e.g. Client visit, delivery, office work"
                                class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition font-mono text-sm">
                         <span class="text-[10px] text-slate-500 mt-1 block">Regular punch ignores these fields. Vehicle punch requires both.</span>
@@ -225,6 +233,8 @@ if (empty($_SESSION['user_id']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
     const apiUrl = 'api.php';
     let employees = [];
     let employeeOptions = [];
+    let latestGpsReading = null;
+    let activeMutationRequests = 0;
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -248,6 +258,171 @@ if (empty($_SESSION['user_id']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         box.insertBefore(row, box.firstChild);
     }
 
+    function updateGpsStatus(message, tone = 'text-slate-300') {
+        const el = document.getElementById('terminal-gps-status');
+        el.className = `w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-3 font-mono text-xs leading-5 ${tone}`;
+        el.textContent = message;
+    }
+
+    function wait(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function isTransientRequestFailure(message) {
+        const value = String(message || '').toLowerCase();
+        return value.includes('timeout') || value.includes('network') || value.includes('failed to fetch') || value.includes('temporarily unavailable');
+    }
+
+    function setPunchBusyState(isBusy, message = '') {
+        document.body.classList.toggle('cursor-wait', isBusy);
+        document.querySelectorAll('button, input, select').forEach(element => {
+            if (isBusy) {
+                if (!('busyDisabled' in element.dataset)) {
+                    element.dataset.busyDisabled = element.disabled ? '1' : '0';
+                }
+                element.disabled = true;
+            } else if ('busyDisabled' in element.dataset) {
+                element.disabled = element.dataset.busyDisabled === '1';
+                delete element.dataset.busyDisabled;
+            }
+        });
+
+        if (message) {
+            showScreen(message, 'text-emerald-400');
+        }
+    }
+
+    async function requestJson(url, options = {}, settings = {}) {
+        const method = String(options.method || 'GET').toUpperCase();
+        const retries = Number.isInteger(settings.retries) ? settings.retries : (method === 'GET' ? 1 : 0);
+        const timeoutMs = Number.isInteger(settings.timeoutMs) ? settings.timeoutMs : 15000;
+        const retryDelayMs = Number.isInteger(settings.retryDelayMs) ? settings.retryDelayMs : 350;
+        const isMutation = settings.isMutation === true || method !== 'GET';
+
+        if (isMutation) {
+            activeMutationRequests += 1;
+            if (activeMutationRequests === 1) {
+                setPunchBusyState(true, settings.busyMessage || 'Saving punch...');
+            }
+        }
+
+        try {
+            for (let attempt = 0; attempt <= retries; attempt += 1) {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+                try {
+                    const response = await fetch(url, {
+                        ...options,
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest',
+                            ...(options.headers || {}),
+                        },
+                        credentials: 'same-origin',
+                        signal: controller.signal,
+                    });
+                    clearTimeout(timeoutId);
+
+                    const text = await response.text();
+                    let payload = null;
+                    try {
+                        payload = text ? JSON.parse(text) : {};
+                    } catch (error) {
+                        payload = null;
+                    }
+
+                    if (!response.ok) {
+                        return {
+                            success: false,
+                            message: payload?.message || `Request failed (${response.status}).`,
+                        };
+                    }
+
+                    if (!payload || typeof payload !== 'object') {
+                        return {
+                            success: false,
+                            message: 'Server returned an unreadable response.',
+                        };
+                    }
+
+                    return payload;
+                } catch (error) {
+                    clearTimeout(timeoutId);
+                    const isTimeout = error?.name === 'AbortError';
+                    const message = isTimeout ? 'Request timeout. Please try again.' : (error?.message || 'Network request failed.');
+
+                    if (attempt < retries && isTransientRequestFailure(message)) {
+                        await wait(retryDelayMs * (attempt + 1));
+                        continue;
+                    }
+
+                    return {
+                        success: false,
+                        message,
+                    };
+                }
+            }
+
+            return {
+                success: false,
+                message: 'Request failed after retries.',
+            };
+        } finally {
+            if (isMutation) {
+                activeMutationRequests = Math.max(0, activeMutationRequests - 1);
+                if (activeMutationRequests === 0) {
+                    setPunchBusyState(false);
+                }
+            }
+        }
+    }
+
+    function formatGpsReading(reading) {
+        if (!reading) {
+            return 'Waiting for a GPS lock. Required for regular punch; optional for vehicle punch.';
+        }
+        const accuracyText = Number.isFinite(reading.accuracy) ? `${reading.accuracy.toFixed(1)}m accuracy` : 'accuracy unavailable';
+        return `Lat ${reading.latitude.toFixed(6)}, Lng ${reading.longitude.toFixed(6)} | ${accuracyText}`;
+    }
+
+    function requestGpsReading() {
+        if (!navigator.geolocation) {
+            updateGpsStatus('This device does not support browser geolocation.', 'text-red-300');
+            return Promise.reject(new Error('unsupported'));
+        }
+
+        updateGpsStatus('Requesting current GPS lock...', 'text-blue-300');
+
+        return new Promise((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    latestGpsReading = {
+                        latitude: Number(position.coords.latitude),
+                        longitude: Number(position.coords.longitude),
+                        accuracy: Number(position.coords.accuracy || 0),
+                    };
+                    updateGpsStatus(formatGpsReading(latestGpsReading), 'text-emerald-300');
+                    resolve(latestGpsReading);
+                },
+                (error) => {
+                    let message = 'Location permission is required before punching.';
+                    if (error && error.code === error.POSITION_UNAVAILABLE) {
+                        message = 'Current location is unavailable. Move to an open area and try again.';
+                    } else if (error && error.code === error.TIMEOUT) {
+                        message = 'Location request timed out. Please try again.';
+                    }
+                    updateGpsStatus(message, 'text-red-300');
+                    reject(new Error(message));
+                },
+                {
+                    enableHighAccuracy: true,
+                    timeout: 15000,
+                    maximumAge: 0,
+                }
+            );
+        });
+    }
+
     function tickClock() {
         const now = new Date();
         document.getElementById('clock-display').innerText = now.toLocaleString();
@@ -258,8 +433,7 @@ if (empty($_SESSION['user_id']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
     async function loadEmployees() {
         try {
-            const res = await fetch(`${apiUrl}?action=listEmployees`);
-            const data = await res.json();
+            const data = await requestJson(`${apiUrl}?action=listEmployees`);
             if (!data.success) return;
             employees = data.employees;
             const departmentSelect = document.getElementById('terminal-department');
@@ -400,6 +574,17 @@ if (empty($_SESSION['user_id']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
             return;
         }
 
+        let gpsReading = null;
+        if (!isVehiclePunch) {
+            try {
+                gpsReading = await requestGpsReading();
+            } catch (error) {
+                showScreen('GPS lock is required before regular punch.', 'text-red-400');
+                logTerminal(`FAILED: ${empId} - GPS lock unavailable`);
+                return;
+            }
+        }
+
         const regularBtn = document.getElementById('btn-regular-punch');
         const vehicleBtn = document.getElementById('btn-vehicle-punch');
         regularBtn.disabled = true;
@@ -415,23 +600,28 @@ if (empty($_SESSION['user_id']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         body.append('empDesignation',  empDesignation);
         body.append('employeePassword', employeePassword);
         body.append('timestamp',       timestamp);
+        if (gpsReading) {
+            body.append('gpsLatitude', String(gpsReading.latitude));
+            body.append('gpsLongitude', String(gpsReading.longitude));
+            body.append('gpsAccuracy', String(gpsReading.accuracy));
+        }
         if (isVehiclePunch) {
             body.append('vehicleName', vehicleName);
             body.append('vehiclePurpose', vehiclePurpose);
         }
 
         try {
-            const res  = await fetch(apiUrl, { method: 'POST', body });
-            const data = await res.json();
+            const data = await requestJson(apiUrl, { method: 'POST', body });
             const emp  = employees.find(e => e.id === empId);
 
             if (data.success) {
                 const t = new Date(timestamp).toLocaleTimeString();
                 const punchLabel = isVehiclePunch ? 'Vehicle punch' : 'Regular punch';
                 const vNote = isVehiclePunch ? ` | Vehicle: ${vehicleName} — ${vehiclePurpose}` : '';
+                const gpsNote = gpsReading ? ` | GPS: ${gpsReading.latitude.toFixed(5)}, ${gpsReading.longitude.toFixed(5)}` : '';
                 const statusNote = isVehiclePunch && data.sessionCompleted ? ' Session completed.' : '';
-                showScreen(`✓ ${punchLabel} saved for ${emp?.name || empId}\nat ${t}.${vNote}${statusNote}`, 'text-emerald-400');
-                logTerminal(`${punchLabel} recorded: ${empId} ${timestamp}${vNote}`);
+                showScreen(`✓ ${punchLabel} saved for ${emp?.name || empId}\nat ${t}.${vNote}${gpsNote}${statusNote}`, 'text-emerald-400');
+                logTerminal(`${punchLabel} recorded: ${empId} ${timestamp}${vNote}${gpsNote}`);
                 if (isVehiclePunch) {
                     if (emp) {
                         if (data.sessionCompleted) {
@@ -451,7 +641,7 @@ if (empty($_SESSION['user_id']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else if (isVehiclePunch && data.message) {
                     alert(data.message);
                 }
-                showScreen(data.message, 'text-red-400');
+                showScreen(data.message || 'Punch request failed. Check connection.', 'text-red-400');
                 logTerminal(`FAILED: ${empId} — ${data.message}`);
             }
         } catch (e) {
@@ -473,6 +663,7 @@ if (empty($_SESSION['user_id']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         tickClock();
         setInterval(tickClock, 1000);
         loadEmployees();
+        requestGpsReading().catch(() => {});
         document.getElementById('btn-regular-punch').addEventListener('click', () => submitPunch('punch'));
         document.getElementById('btn-vehicle-punch').addEventListener('click', () => submitPunch('punchVehicle'));
     });

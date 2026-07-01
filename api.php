@@ -6,15 +6,127 @@ $action = $_REQUEST['action'] ?? '';
 $mysqli = db_connect();
 
 $publicActions = ['listEmployees', 'punch', 'punchVehicle'];
+const APP_RUNTIME_SCHEMA_VERSION = '2026-07-01-runtime-5';
+
+function ensure_runtime_metadata_table($mysqli) {
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+
+    $result = $mysqli->query("SHOW TABLES LIKE 'app_runtime_metadata'");
+    $ready = $result && $result->num_rows > 0;
+    if (!$ready) {
+        $createSql = "CREATE TABLE app_runtime_metadata (
+            meta_key VARCHAR(100) NOT NULL PRIMARY KEY,
+            meta_value VARCHAR(255) NOT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+        $ready = $mysqli->query($createSql) === true;
+    }
+
+    return $ready;
+}
+
+function get_runtime_schema_version($mysqli) {
+    static $loaded = false;
+    static $version = '';
+
+    if ($loaded) {
+        return $version;
+    }
+    $loaded = true;
+
+    if (!ensure_runtime_metadata_table($mysqli)) {
+        return '';
+    }
+
+    $stmt = $mysqli->prepare('SELECT meta_value FROM app_runtime_metadata WHERE meta_key = ? LIMIT 1');
+    if (!$stmt) {
+        return '';
+    }
+
+    $key = 'schema_version';
+    $stmt->bind_param('s', $key);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    $version = (string)($row['meta_value'] ?? '');
+    return $version;
+}
+
+function runtime_schema_is_current($mysqli) {
+    return get_runtime_schema_version($mysqli) === APP_RUNTIME_SCHEMA_VERSION;
+}
+
+function mark_runtime_schema_current($mysqli) {
+    if (!ensure_runtime_metadata_table($mysqli)) {
+        return false;
+    }
+
+    $stmt = $mysqli->prepare('INSERT INTO app_runtime_metadata (meta_key, meta_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)');
+    if (!$stmt) {
+        return false;
+    }
+
+    $key = 'schema_version';
+    $value = APP_RUNTIME_SCHEMA_VERSION;
+    $stmt->bind_param('ss', $key, $value);
+    $ok = $stmt->execute();
+    $stmt->close();
+    return $ok;
+}
 
 function has_full_access_role($role) {
     return in_array($role, ['admin', 'hr', 'it'], true);
+}
+
+function bootstrap_runtime_schema($mysqli) {
+    static $bootstrapped = null;
+    if ($bootstrapped !== null) {
+        return $bootstrapped;
+    }
+
+    if (runtime_schema_is_current($mysqli)) {
+        $bootstrapped = true;
+        return true;
+    }
+
+    $bootstrapped = ensure_users_table($mysqli)
+        && ensure_designation_column($mysqli)
+        && ensure_hr_permission_column($mysqli)
+        && ensure_employee_deleted_flag($mysqli)
+        && ensure_employee_purged_flag($mysqli)
+        && ensure_vehicle_columns($mysqli)
+        && ensure_attendance_gps_columns($mysqli)
+        && ensure_vehicle_punches_table($mysqli)
+        && ensure_vehicle_punch_gps_columns($mysqli)
+        && ensure_attendance_high_volume_indexes($mysqli)
+        && ensure_operational_query_indexes($mysqli)
+        && ensure_attendance_daily_summary_table($mysqli)
+        && ensure_leave_requests_table($mysqli)
+        && ensure_travel_orders_table($mysqli);
+
+    if ($bootstrapped) {
+        $syncErrors = [];
+        sync_all_employee_login_users($mysqli, $syncErrors);
+    }
+
+    if ($bootstrapped) {
+        mark_runtime_schema_current($mysqli);
+    }
+
+    return $bootstrapped;
 }
 
 function ensure_users_table($mysqli) {
     static $ready = null;
     if ($ready !== null) {
         return $ready;
+    }
+    if (runtime_schema_is_current($mysqli)) {
+        $ready = true;
+        return true;
     }
 
     $result = $mysqli->query("SHOW TABLES LIKE 'users'");
@@ -86,7 +198,9 @@ function get_logged_in_employee_id($mysqli) {
     if (!validate_employee_id($username)) {
         return '';
     }
-    $stmt = $mysqli->prepare('SELECT COUNT(*) FROM employees WHERE id = ?');
+    ensure_employee_deleted_flag($mysqli);
+    ensure_employee_purged_flag($mysqli);
+    $stmt = $mysqli->prepare('SELECT COUNT(*) FROM employees WHERE id = ? AND is_deleted = 0 AND is_purged = 0');
     if (!$stmt) {
         return '';
     }
@@ -105,6 +219,30 @@ function is_it_designation($designation) {
         return false;
     }
     return preg_match('/\bIT\b/i', $designation) === 1;
+}
+
+function is_hr_designation($designation) {
+    $designation = trim((string)$designation);
+    if ($designation === '') {
+        return false;
+    }
+    return preg_match('/\bHR\b|\bhuman\s+resources\b/i', $designation) === 1;
+}
+
+function is_manager_designation($designation) {
+    $designation = trim((string)$designation);
+    if ($designation === '') {
+        return false;
+    }
+    if (preg_match('/\b(?:assistant|asst\.?|asst)\s+manager\b/i', $designation) === 1) {
+        return false;
+    }
+    return preg_match('/\bmanager\b/i', $designation) === 1;
+}
+
+function has_leave_form_full_access($mysqli) {
+    $role = (string)($_SESSION['role'] ?? '');
+    return has_full_access_role($role);
 }
 
 function should_use_default_employee_password($role) {
@@ -153,10 +291,12 @@ function sync_all_employee_login_users($mysqli, &$errors = []) {
     $errors = [];
     $withDesig = ensure_designation_column($mysqli);
     $withHrPermission = ensure_hr_permission_column($mysqli);
+    ensure_employee_deleted_flag($mysqli);
+    ensure_employee_purged_flag($mysqli);
     $designationCol = $withDesig ? 'designation' : '"" AS designation';
     $hrCol = $withHrPermission ? 'can_edit_attendance' : '0 AS can_edit_attendance';
 
-    $result = $mysqli->query("SELECT id, {$designationCol}, {$hrCol} FROM employees");
+    $result = $mysqli->query("SELECT id, {$designationCol}, {$hrCol} FROM employees WHERE is_deleted = 0 AND is_purged = 0");
     if (!$result) {
         $errors[] = 'Could not load employees for login sync: ' . $mysqli->error;
         return false;
@@ -173,6 +313,218 @@ function sync_all_employee_login_users($mysqli, &$errors = []) {
     }
 
     return count($errors) === 0;
+}
+
+function count_user_accounts($mysqli) {
+    $countRes = $mysqli->query('SELECT COUNT(*) AS cnt FROM users');
+    return $countRes ? (int)($countRes->fetch_assoc()['cnt'] ?? 0) : 0;
+}
+
+function find_user_by_id($mysqli, $id) {
+    $stmt = $mysqli->prepare('SELECT id, username, role FROM users WHERE id = ? LIMIT 1');
+    if (!$stmt) {
+        return null;
+    }
+    $stmt->bind_param('i', $id);
+    $stmt->execute();
+    $user = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $user ?: null;
+}
+
+function employee_exists_by_id($mysqli, $empId) {
+    $stmt = $mysqli->prepare('SELECT COUNT(*) FROM employees WHERE id = ?');
+    if (!$stmt) {
+        return false;
+    }
+    $stmt->bind_param('s', $empId);
+    $stmt->execute();
+    $count = 0;
+    $stmt->bind_result($count);
+    $stmt->fetch();
+    $stmt->close();
+    return $count > 0;
+}
+
+function count_linked_users_for_employees($mysqli, $employeeIds) {
+    if (!$employeeIds) {
+        return 0;
+    }
+
+    $stmt = $mysqli->prepare('SELECT COUNT(*) FROM users WHERE username = ?');
+    if (!$stmt) {
+        return 0;
+    }
+
+    $count = 0;
+    foreach (array_values(array_unique($employeeIds)) as $empId) {
+        $stmt->bind_param('s', $empId);
+        $stmt->execute();
+        $matched = 0;
+        $stmt->bind_result($matched);
+        $stmt->fetch();
+        $stmt->free_result();
+        if ($matched > 0) {
+            $count += 1;
+        }
+    }
+    $stmt->close();
+    return $count;
+}
+
+function delete_employee_bundle_inner($mysqli, $id, $hasVehiclePunches, $hasUsersTable) {
+    if (validate_employee_id((string)($_SESSION['username'] ?? '')) && (string)($_SESSION['username'] ?? '') === $id) {
+        throw new RuntimeException('You cannot delete your own logged-in employee account.');
+    }
+
+    ensure_employee_deleted_flag($mysqli);
+    ensure_employee_purged_flag($mysqli);
+
+    if ($hasUsersTable) {
+        $userStmt = $mysqli->prepare('DELETE FROM users WHERE username = ?');
+        if (!$userStmt) {
+            throw new RuntimeException('Could not prepare login cleanup statement.');
+        }
+        $userStmt->bind_param('s', $id);
+        if (!$userStmt->execute()) {
+            throw new RuntimeException('Could not remove login user: ' . $userStmt->error);
+        }
+        $userStmt->close();
+    }
+
+    $employeeStmt = $mysqli->prepare('UPDATE employees SET is_deleted = 1, is_purged = 0 WHERE id = ? AND is_deleted = 0');
+    if (!$employeeStmt) {
+        throw new RuntimeException('Could not prepare employee delete statement.');
+    }
+    $employeeStmt->bind_param('s', $id);
+    if (!$employeeStmt->execute()) {
+        throw new RuntimeException('Could not archive employee: ' . $employeeStmt->error);
+    }
+    $deletedEmployees = $employeeStmt->affected_rows;
+    $employeeStmt->close();
+
+    if ($deletedEmployees < 1) {
+        $existsStmt = $mysqli->prepare('SELECT COUNT(*) FROM employees WHERE id = ?');
+        if (!$existsStmt) {
+            throw new RuntimeException('Could not verify employee archive state.');
+        }
+        $existsStmt->bind_param('s', $id);
+        $existsStmt->execute();
+        $existing = 0;
+        $existsStmt->bind_result($existing);
+        $existsStmt->fetch();
+        $existsStmt->close();
+        if ($existing < 1) {
+            throw new RuntimeException('Employee not found.');
+        }
+    }
+}
+
+function purge_archived_employee_bundle_inner($mysqli, $id, $hasUsersTable) {
+    if (validate_employee_id((string)($_SESSION['username'] ?? '')) && (string)($_SESSION['username'] ?? '') === $id) {
+        throw new RuntimeException('You cannot permanently remove your own logged-in employee account.');
+    }
+
+    ensure_employee_deleted_flag($mysqli);
+    ensure_employee_purged_flag($mysqli);
+
+    if ($hasUsersTable) {
+        $userStmt = $mysqli->prepare('DELETE FROM users WHERE username = ?');
+        if (!$userStmt) {
+            throw new RuntimeException('Could not prepare login cleanup statement.');
+        }
+        $userStmt->bind_param('s', $id);
+        if (!$userStmt->execute()) {
+            throw new RuntimeException('Could not remove login user: ' . $userStmt->error);
+        }
+        $userStmt->close();
+    }
+
+    $employeeStmt = $mysqli->prepare('UPDATE employees SET is_purged = 1 WHERE id = ? AND is_deleted = 1 AND is_purged = 0');
+    if (!$employeeStmt) {
+        throw new RuntimeException('Could not prepare archived employee delete statement.');
+    }
+    $employeeStmt->bind_param('s', $id);
+    if (!$employeeStmt->execute()) {
+        throw new RuntimeException('Could not permanently remove archived employee: ' . $employeeStmt->error);
+    }
+    $affected = $employeeStmt->affected_rows;
+    $employeeStmt->close();
+
+    if ($affected < 1) {
+        $existsStmt = $mysqli->prepare('SELECT is_deleted, is_purged FROM employees WHERE id = ? LIMIT 1');
+        if (!$existsStmt) {
+            throw new RuntimeException('Could not verify archived employee delete state.');
+        }
+        $isDeleted = 0;
+        $isPurged = 0;
+        $existsStmt->bind_param('s', $id);
+        $existsStmt->execute();
+        $existsStmt->bind_result($isDeleted, $isPurged);
+        if (!$existsStmt->fetch()) {
+            $existsStmt->close();
+            throw new RuntimeException('Employee not found.');
+        }
+        $existsStmt->close();
+        if ((int)$isPurged === 1) {
+            throw new RuntimeException('Archived employee already removed.');
+        }
+        if ((int)$isDeleted !== 1) {
+            throw new RuntimeException('Only archived employees can be permanently removed from staff directories.');
+        }
+    }
+}
+
+function delete_user_bundle_inner($mysqli, $userId, $hasVehiclePunches, $hasUsersTable) {
+    $user = find_user_by_id($mysqli, $userId);
+    if (!$user) {
+        throw new RuntimeException('User not found.');
+    }
+    if ((int)($_SESSION['user_id'] ?? 0) === (int)$user['id']) {
+        throw new RuntimeException('You cannot delete your own logged-in account.');
+    }
+
+    $username = (string)($user['username'] ?? '');
+    if (validate_employee_id($username) && employee_exists_by_id($mysqli, $username)) {
+        delete_employee_bundle_inner($mysqli, $username, $hasVehiclePunches, $hasUsersTable);
+        return;
+    }
+
+    $stmt = $mysqli->prepare('DELETE FROM users WHERE id = ?');
+    if (!$stmt) {
+        throw new RuntimeException('Could not prepare user delete statement.');
+    }
+    $stmt->bind_param('i', $userId);
+    if (!$stmt->execute()) {
+        throw new RuntimeException('Could not delete user: ' . $stmt->error);
+    }
+    $affected = $stmt->affected_rows;
+    $stmt->close();
+    if ($affected < 1) {
+        throw new RuntimeException('User not found.');
+    }
+}
+
+function parse_bulk_employee_ids($rawIds) {
+    $ids = [];
+    foreach ((array)$rawIds as $id) {
+        $value = sanitize((string)$id);
+        if ($value !== '' && validate_employee_id($value)) {
+            $ids[] = $value;
+        }
+    }
+    return array_values(array_unique($ids));
+}
+
+function parse_bulk_user_ids($rawIds) {
+    $ids = [];
+    foreach ((array)$rawIds as $id) {
+        $value = (int)$id;
+        if ($value > 0) {
+            $ids[] = $value;
+        }
+    }
+    return array_values(array_unique($ids));
 }
 
 function respond($data) {
@@ -258,10 +610,80 @@ function vehicle_session_duration_parts($startTimestamp, $endTimestamp) {
     return [$totalMinutes, implode(' ', $parts)];
 }
 
+function build_vehicle_usage_dataset($mysqli, $start, $end, $department, $viewerEmpId = '') {
+    if (!ensure_vehicle_punches_table($mysqli)) {
+        return [];
+    }
+    ensure_operational_query_indexes($mysqli);
+
+    $params = [$start, $end . ' 23:59:59'];
+    $query = 'SELECT v.session_token, v.emp_id, e.name, e.department, '
+        . 'MIN(CASE WHEN v.session_type = "start" THEN v.timestamp END) AS start_timestamp, '
+        . 'MAX(CASE WHEN v.session_type = "end" THEN v.timestamp END) AS end_timestamp, '
+        . 'MAX(v.vehicle_name) AS vehicle_name, '
+        . 'MAX(v.vehicle_purpose) AS vehicle_purpose '
+        . 'FROM vehicle_punches v '
+        . 'JOIN employees e ON v.emp_id = e.id '
+        . 'WHERE v.timestamp BETWEEN ? AND ?';
+    if ($department !== 'All') {
+        $query .= ' AND e.department = ?';
+        $params[] = $department;
+    }
+    if ($viewerEmpId !== '') {
+        $query .= ' AND e.id = ?';
+        $params[] = $viewerEmpId;
+    }
+    $query .= ' GROUP BY v.session_token, v.emp_id, e.name, e.department HAVING start_timestamp IS NOT NULL ORDER BY start_timestamp DESC, v.emp_id ASC';
+
+    $stmt = $mysqli->prepare($query);
+    if (!$stmt) {
+        return [];
+    }
+    if ($department !== 'All' && $viewerEmpId !== '') {
+        $stmt->bind_param('ssss', $params[0], $params[1], $params[2], $params[3]);
+    } elseif ($department !== 'All' || $viewerEmpId !== '') {
+        $stmt->bind_param('sss', $params[0], $params[1], $params[2]);
+    } else {
+        $stmt->bind_param('ss', $params[0], $params[1]);
+    }
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    $records = [];
+    foreach ($rows as $row) {
+        $startTimestamp = (string)($row['start_timestamp'] ?? '');
+        $endTimestamp = (string)($row['end_timestamp'] ?? '');
+        [$durationMinutes, $durationText] = vehicle_session_duration_parts($startTimestamp, $endTimestamp);
+        $records[] = [
+            'empId' => $row['emp_id'],
+            'name' => $row['name'],
+            'department' => $row['department'],
+            'sessionToken' => $row['session_token'],
+            'date' => substr($startTimestamp, 0, 10),
+            'startTime' => substr($startTimestamp, 11),
+            'endTime' => $endTimestamp ? substr($endTimestamp, 11) : '',
+            'startTimestamp' => $startTimestamp,
+            'endTimestamp' => $endTimestamp,
+            'vehicleName' => $row['vehicle_name'],
+            'vehiclePurpose' => $row['vehicle_purpose'],
+            'status' => $endTimestamp ? 'Completed' : 'In progress',
+            'durationMinutes' => $durationMinutes,
+            'durationText' => $durationText,
+        ];
+    }
+
+    return $records;
+}
+
 function ensure_vehicle_columns($mysqli) {
     static $ready = null;
     if ($ready !== null) {
         return $ready;
+    }
+    if (runtime_schema_is_current($mysqli)) {
+        $ready = true;
+        return true;
     }
 
     $nameResult = $mysqli->query("SHOW COLUMNS FROM attendance_punches LIKE 'vehicle_name'");
@@ -279,10 +701,235 @@ function ensure_vehicle_columns($mysqli) {
     return $ready;
 }
 
+function ensure_attendance_gps_columns($mysqli) {
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+    if (runtime_schema_is_current($mysqli)) {
+        $ready = true;
+        return true;
+    }
+
+    $latitudeResult = $mysqli->query("SHOW COLUMNS FROM attendance_punches LIKE 'gps_latitude'");
+    $longitudeResult = $mysqli->query("SHOW COLUMNS FROM attendance_punches LIKE 'gps_longitude'");
+    $accuracyResult = $mysqli->query("SHOW COLUMNS FROM attendance_punches LIKE 'gps_accuracy_meters'");
+    $hasLatitude = $latitudeResult && $latitudeResult->num_rows > 0;
+    $hasLongitude = $longitudeResult && $longitudeResult->num_rows > 0;
+    $hasAccuracy = $accuracyResult && $accuracyResult->num_rows > 0;
+
+    if (!$hasLatitude) {
+        $mysqli->query("ALTER TABLE attendance_punches ADD COLUMN gps_latitude DECIMAL(10,7) NULL AFTER vehicle_purpose");
+    }
+    if (!$hasLongitude) {
+        $mysqli->query("ALTER TABLE attendance_punches ADD COLUMN gps_longitude DECIMAL(10,7) NULL AFTER gps_latitude");
+    }
+    if (!$hasAccuracy) {
+        $mysqli->query("ALTER TABLE attendance_punches ADD COLUMN gps_accuracy_meters DECIMAL(8,2) NULL AFTER gps_longitude");
+    }
+
+    $verifyLatitude = $mysqli->query("SHOW COLUMNS FROM attendance_punches LIKE 'gps_latitude'");
+    $verifyLongitude = $mysqli->query("SHOW COLUMNS FROM attendance_punches LIKE 'gps_longitude'");
+    $verifyAccuracy = $mysqli->query("SHOW COLUMNS FROM attendance_punches LIKE 'gps_accuracy_meters'");
+    $ready = $verifyLatitude && $verifyLatitude->num_rows > 0
+        && $verifyLongitude && $verifyLongitude->num_rows > 0
+        && $verifyAccuracy && $verifyAccuracy->num_rows > 0;
+
+    return $ready;
+}
+
+function ensure_vehicle_punch_gps_columns($mysqli) {
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+    if (runtime_schema_is_current($mysqli)) {
+        $ready = true;
+        return true;
+    }
+
+    if (!ensure_vehicle_punches_table($mysqli)) {
+        return false;
+    }
+
+    $latitudeResult = $mysqli->query("SHOW COLUMNS FROM vehicle_punches LIKE 'gps_latitude'");
+    $longitudeResult = $mysqli->query("SHOW COLUMNS FROM vehicle_punches LIKE 'gps_longitude'");
+    $accuracyResult = $mysqli->query("SHOW COLUMNS FROM vehicle_punches LIKE 'gps_accuracy_meters'");
+    $hasLatitude = $latitudeResult && $latitudeResult->num_rows > 0;
+    $hasLongitude = $longitudeResult && $longitudeResult->num_rows > 0;
+    $hasAccuracy = $accuracyResult && $accuracyResult->num_rows > 0;
+
+    if (!$hasLatitude) {
+        $mysqli->query("ALTER TABLE vehicle_punches ADD COLUMN gps_latitude DECIMAL(10,7) NULL AFTER session_type");
+    }
+    if (!$hasLongitude) {
+        $mysqli->query("ALTER TABLE vehicle_punches ADD COLUMN gps_longitude DECIMAL(10,7) NULL AFTER gps_latitude");
+    }
+    if (!$hasAccuracy) {
+        $mysqli->query("ALTER TABLE vehicle_punches ADD COLUMN gps_accuracy_meters DECIMAL(8,2) NULL AFTER gps_longitude");
+    }
+
+    $verifyLatitude = $mysqli->query("SHOW COLUMNS FROM vehicle_punches LIKE 'gps_latitude'");
+    $verifyLongitude = $mysqli->query("SHOW COLUMNS FROM vehicle_punches LIKE 'gps_longitude'");
+    $verifyAccuracy = $mysqli->query("SHOW COLUMNS FROM vehicle_punches LIKE 'gps_accuracy_meters'");
+    $ready = $verifyLatitude && $verifyLatitude->num_rows > 0
+        && $verifyLongitude && $verifyLongitude->num_rows > 0
+        && $verifyAccuracy && $verifyAccuracy->num_rows > 0;
+
+    return $ready;
+}
+
+function ensure_attendance_high_volume_indexes($mysqli) {
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+    if (runtime_schema_is_current($mysqli)) {
+        $ready = true;
+        return true;
+    }
+
+    $attendanceEmpTime = $mysqli->query("SHOW INDEX FROM attendance_punches WHERE Key_name = 'idx_attendance_emp_time'");
+    if (!$attendanceEmpTime || $attendanceEmpTime->num_rows === 0) {
+        $mysqli->query('ALTER TABLE attendance_punches ADD INDEX idx_attendance_emp_time (emp_id, timestamp)');
+    }
+
+    $attendanceTimeEmp = $mysqli->query("SHOW INDEX FROM attendance_punches WHERE Key_name = 'idx_attendance_time_emp'");
+    if (!$attendanceTimeEmp || $attendanceTimeEmp->num_rows === 0) {
+        $mysqli->query('ALTER TABLE attendance_punches ADD INDEX idx_attendance_time_emp (timestamp, emp_id)');
+    }
+
+    if (ensure_vehicle_punches_table($mysqli)) {
+        $vehicleEmpTime = $mysqli->query("SHOW INDEX FROM vehicle_punches WHERE Key_name = 'idx_vehicle_emp_time'");
+        if (!$vehicleEmpTime || $vehicleEmpTime->num_rows === 0) {
+            $mysqli->query('ALTER TABLE vehicle_punches ADD INDEX idx_vehicle_emp_time (emp_id, timestamp)');
+        }
+
+        $vehicleTimeEmp = $mysqli->query("SHOW INDEX FROM vehicle_punches WHERE Key_name = 'idx_vehicle_time_emp'");
+        if (!$vehicleTimeEmp || $vehicleTimeEmp->num_rows === 0) {
+            $mysqli->query('ALTER TABLE vehicle_punches ADD INDEX idx_vehicle_time_emp (timestamp, emp_id)');
+        }
+    }
+
+    $verifyAttendanceEmpTime = $mysqli->query("SHOW INDEX FROM attendance_punches WHERE Key_name = 'idx_attendance_emp_time'");
+    $verifyAttendanceTimeEmp = $mysqli->query("SHOW INDEX FROM attendance_punches WHERE Key_name = 'idx_attendance_time_emp'");
+    $vehicleIndexed = true;
+    if (ensure_vehicle_punches_table($mysqli)) {
+        $verifyVehicleEmpTime = $mysqli->query("SHOW INDEX FROM vehicle_punches WHERE Key_name = 'idx_vehicle_emp_time'");
+        $verifyVehicleTimeEmp = $mysqli->query("SHOW INDEX FROM vehicle_punches WHERE Key_name = 'idx_vehicle_time_emp'");
+        $vehicleIndexed = $verifyVehicleEmpTime && $verifyVehicleEmpTime->num_rows > 0
+            && $verifyVehicleTimeEmp && $verifyVehicleTimeEmp->num_rows > 0;
+    }
+
+    $ready = $verifyAttendanceEmpTime && $verifyAttendanceEmpTime->num_rows > 0
+        && $verifyAttendanceTimeEmp && $verifyAttendanceTimeEmp->num_rows > 0
+        && $vehicleIndexed;
+
+    return $ready;
+}
+
+function ensure_operational_query_indexes($mysqli) {
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+    if (runtime_schema_is_current($mysqli)) {
+        $ready = true;
+        return true;
+    }
+
+    $employeesDeptIndex = $mysqli->query("SHOW INDEX FROM employees WHERE Key_name = 'idx_employees_department_id'");
+    if (!$employeesDeptIndex || $employeesDeptIndex->num_rows === 0) {
+        $mysqli->query('ALTER TABLE employees ADD INDEX idx_employees_department_id (department, id)');
+    }
+
+    ensure_employee_deleted_flag($mysqli);
+    $employeesActiveDeptIndex = $mysqli->query("SHOW INDEX FROM employees WHERE Key_name = 'idx_employees_active_department_id'");
+    if (!$employeesActiveDeptIndex || $employeesActiveDeptIndex->num_rows === 0) {
+        $mysqli->query('ALTER TABLE employees ADD INDEX idx_employees_active_department_id (is_deleted, department, id)');
+    }
+
+    if (ensure_leave_requests_table($mysqli)) {
+        $leaveStartEmpIndex = $mysqli->query("SHOW INDEX FROM leave_requests WHERE Key_name = 'idx_leave_start_emp'");
+        if (!$leaveStartEmpIndex || $leaveStartEmpIndex->num_rows === 0) {
+            $mysqli->query('ALTER TABLE leave_requests ADD INDEX idx_leave_start_emp (start_date, emp_id)');
+        }
+
+        $leaveEmpStatusIndex = $mysqli->query("SHOW INDEX FROM leave_requests WHERE Key_name = 'idx_leave_emp_status_start'");
+        if (!$leaveEmpStatusIndex || $leaveEmpStatusIndex->num_rows === 0) {
+            $mysqli->query('ALTER TABLE leave_requests ADD INDEX idx_leave_emp_status_start (emp_id, status, start_date)');
+        }
+    }
+
+    if (ensure_travel_orders_table($mysqli)) {
+        $travelFormEmpIndex = $mysqli->query("SHOW INDEX FROM travel_orders WHERE Key_name = 'idx_travel_form_emp'");
+        if (!$travelFormEmpIndex || $travelFormEmpIndex->num_rows === 0) {
+            $mysqli->query('ALTER TABLE travel_orders ADD INDEX idx_travel_form_emp (form_date, emp_id)');
+        }
+
+        $travelEmpDepartureIndex = $mysqli->query("SHOW INDEX FROM travel_orders WHERE Key_name = 'idx_travel_emp_departure'");
+        if (!$travelEmpDepartureIndex || $travelEmpDepartureIndex->num_rows === 0) {
+            $mysqli->query('ALTER TABLE travel_orders ADD INDEX idx_travel_emp_departure (emp_id, departure_date)');
+        }
+    }
+
+    if (ensure_vehicle_punches_table($mysqli)) {
+        $vehicleSessionTypeToken = $mysqli->query("SHOW INDEX FROM vehicle_punches WHERE Key_name = 'idx_vehicle_session_type_token'");
+        if (!$vehicleSessionTypeToken || $vehicleSessionTypeToken->num_rows === 0) {
+            $mysqli->query('ALTER TABLE vehicle_punches ADD INDEX idx_vehicle_session_type_token (session_type, session_token)');
+        }
+
+        $vehicleEmpSessionTime = $mysqli->query("SHOW INDEX FROM vehicle_punches WHERE Key_name = 'idx_vehicle_emp_session_time'");
+        if (!$vehicleEmpSessionTime || $vehicleEmpSessionTime->num_rows === 0) {
+            $mysqli->query('ALTER TABLE vehicle_punches ADD INDEX idx_vehicle_emp_session_time (emp_id, session_type, timestamp)');
+        }
+
+        $vehicleNameSessionTime = $mysqli->query("SHOW INDEX FROM vehicle_punches WHERE Key_name = 'idx_vehicle_name_session_time'");
+        if (!$vehicleNameSessionTime || $vehicleNameSessionTime->num_rows === 0) {
+            $mysqli->query('ALTER TABLE vehicle_punches ADD INDEX idx_vehicle_name_session_time (vehicle_name, session_type, timestamp)');
+        }
+    }
+
+    $ready = true;
+    return true;
+}
+
+function parse_gps_coordinate($value, $min, $max) {
+    if ($value === null || $value === '') {
+        return null;
+    }
+    if (!is_numeric($value)) {
+        return null;
+    }
+    $number = round((float)$value, 7);
+    if ($number < $min || $number > $max) {
+        return null;
+    }
+    return $number;
+}
+
+function parse_gps_accuracy($value) {
+    if ($value === null || $value === '') {
+        return null;
+    }
+    if (!is_numeric($value)) {
+        return null;
+    }
+    $number = round((float)$value, 2);
+    if ($number < 0 || $number > 50000) {
+        return null;
+    }
+    return $number;
+}
+
 function ensure_vehicle_punches_table($mysqli) {
     static $ready = null;
     if ($ready !== null) {
         return $ready;
+    }
+    if (runtime_schema_is_current($mysqli)) {
+        $ready = true;
+        return true;
     }
 
     $result = $mysqli->query("SHOW TABLES LIKE 'vehicle_punches'");
@@ -327,6 +974,10 @@ function ensure_leave_requests_table($mysqli) {
     if ($ready !== null) {
         return $ready;
     }
+    if (runtime_schema_is_current($mysqli)) {
+        $ready = true;
+        return true;
+    }
 
     $result = $mysqli->query("SHOW TABLES LIKE 'leave_requests'");
     $ready = $result && $result->num_rows > 0;
@@ -359,6 +1010,10 @@ function ensure_travel_orders_table($mysqli) {
     static $ready = null;
     if ($ready !== null) {
         return $ready;
+    }
+    if (runtime_schema_is_current($mysqli)) {
+        $ready = true;
+        return true;
     }
 
     $result = $mysqli->query("SHOW TABLES LIKE 'travel_orders'");
@@ -406,6 +1061,10 @@ function ensure_designation_column($mysqli) {
     if ($desigReady !== null) {
         return $desigReady;
     }
+    if (runtime_schema_is_current($mysqli)) {
+        $desigReady = true;
+        return true;
+    }
 
     $result = $mysqli->query("SHOW COLUMNS FROM employees LIKE 'designation'");
     $desigReady = $result && $result->num_rows > 0;
@@ -424,6 +1083,10 @@ function ensure_hr_permission_column($mysqli) {
     if ($ready !== null) {
         return $ready;
     }
+    if (runtime_schema_is_current($mysqli)) {
+        $ready = true;
+        return true;
+    }
 
     $result = $mysqli->query("SHOW COLUMNS FROM employees LIKE 'can_edit_attendance'");
     $ready = $result && $result->num_rows > 0;
@@ -437,12 +1100,80 @@ function ensure_hr_permission_column($mysqli) {
     return $ready;
 }
 
+function ensure_employee_deleted_flag($mysqli) {
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+    if (runtime_schema_is_current($mysqli)) {
+        $ready = true;
+        return true;
+    }
+
+    $result = $mysqli->query("SHOW COLUMNS FROM employees LIKE 'is_deleted'");
+    $ready = $result && $result->num_rows > 0;
+
+    if (!$ready) {
+        $mysqli->query("ALTER TABLE employees ADD COLUMN is_deleted TINYINT(1) NOT NULL DEFAULT 0 AFTER can_edit_attendance");
+        $verify = $mysqli->query("SHOW COLUMNS FROM employees LIKE 'is_deleted'");
+        $ready = $verify && $verify->num_rows > 0;
+    }
+
+    return $ready;
+}
+
+function ensure_employee_purged_flag($mysqli) {
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+    if (runtime_schema_is_current($mysqli)) {
+        $ready = true;
+        return true;
+    }
+
+    $result = $mysqli->query("SHOW COLUMNS FROM employees LIKE 'is_purged'");
+    $ready = $result && $result->num_rows > 0;
+
+    if (!$ready) {
+        $mysqli->query("ALTER TABLE employees ADD COLUMN is_purged TINYINT(1) NOT NULL DEFAULT 0 AFTER is_deleted");
+        $verify = $mysqli->query("SHOW COLUMNS FROM employees LIKE 'is_purged'");
+        $ready = $verify && $verify->num_rows > 0;
+    }
+
+    $indexResult = $mysqli->query("SHOW INDEX FROM employees WHERE Key_name = 'idx_employees_archive_state_id'");
+    $indexReady = $indexResult && $indexResult->num_rows > 0;
+    if (!$indexReady) {
+        $mysqli->query('ALTER TABLE employees ADD INDEX idx_employees_archive_state_id (is_deleted, is_purged, id)');
+        $verifyIndex = $mysqli->query("SHOW INDEX FROM employees WHERE Key_name = 'idx_employees_archive_state_id'");
+        $indexReady = $verifyIndex && $verifyIndex->num_rows > 0;
+    }
+
+    return $ready && $indexReady;
+}
+
+function employee_is_active($mysqli, $empId) {
+    ensure_employee_deleted_flag($mysqli);
+    ensure_employee_purged_flag($mysqli);
+    $stmt = $mysqli->prepare('SELECT COUNT(*) FROM employees WHERE id = ? AND is_deleted = 0 AND is_purged = 0');
+    if (!$stmt) {
+        return false;
+    }
+    $stmt->bind_param('s', $empId);
+    $stmt->execute();
+    $count = 0;
+    $stmt->bind_result($count);
+    $stmt->fetch();
+    $stmt->close();
+    return $count > 0;
+}
+
 function employee_can_edit_attendance($mysqli, $empId) {
-    if (!$empId || !ensure_hr_permission_column($mysqli)) {
+    if (!$empId || !ensure_hr_permission_column($mysqli) || !ensure_employee_deleted_flag($mysqli) || !ensure_employee_purged_flag($mysqli)) {
         return false;
     }
 
-    $stmt = $mysqli->prepare('SELECT can_edit_attendance FROM employees WHERE id = ? LIMIT 1');
+    $stmt = $mysqli->prepare('SELECT can_edit_attendance FROM employees WHERE id = ? AND is_deleted = 0 AND is_purged = 0 LIMIT 1');
     if (!$stmt) {
         return false;
     }
@@ -493,9 +1224,11 @@ function verify_employee_punch_profile($mysqli, $empId, $empName, $empDepartment
     }
 
     $hasDesignation = ensure_designation_column($mysqli);
+    ensure_employee_deleted_flag($mysqli);
+    ensure_employee_purged_flag($mysqli);
     $sql = $hasDesignation
-        ? 'SELECT name, department, designation FROM employees WHERE id = ? LIMIT 1'
-        : 'SELECT name, department, "" AS designation FROM employees WHERE id = ? LIMIT 1';
+        ? 'SELECT name, department, designation FROM employees WHERE id = ? AND is_deleted = 0 AND is_purged = 0 LIMIT 1'
+        : 'SELECT name, department, "" AS designation FROM employees WHERE id = ? AND is_deleted = 0 AND is_purged = 0 LIMIT 1';
 
     $stmt = $mysqli->prepare($sql);
     if (!$stmt) {
@@ -530,9 +1263,12 @@ function verify_employee_punch_profile($mysqli, $empId, $empName, $empDepartment
     return true;
 }
 
-function register_employee_punch($mysqli, $empId, $timestamp, $vehicleName, $vehiclePurpose, $requireVehicleDetails = false) {
+function register_employee_punch($mysqli, $empId, $timestamp, $vehicleName, $vehiclePurpose, $requireVehicleDetails = false, $gpsLatitude = null, $gpsLongitude = null, $gpsAccuracy = null) {
     if (!$empId || !$timestamp) {
         respond(['success' => false, 'message' => 'Employee and valid timestamp are required.']);
+    }
+    if (!$requireVehicleDetails && ($gpsLatitude === null || $gpsLongitude === null)) {
+        respond(['success' => false, 'message' => 'GPS location is required before punching.']);
     }
 
     if ($requireVehicleDetails) {
@@ -545,19 +1281,14 @@ function register_employee_punch($mysqli, $empId, $timestamp, $vehicleName, $veh
         $vehiclePurpose = '';
     }
 
-    $stmt = $mysqli->prepare('SELECT COUNT(*) FROM employees WHERE id = ?');
-    $stmt->bind_param('s', $empId);
-    $stmt->execute();
-    $existsEmployee = 0;
-    $stmt->bind_result($existsEmployee);
-    $stmt->fetch();
-    $stmt->close();
-    if (!$existsEmployee) {
+    if (!employee_is_active($mysqli, $empId)) {
         respond(['success' => false, 'message' => 'Employee not found.']);
     }
 
+    ensure_attendance_high_volume_indexes($mysqli);
+
     if ($requireVehicleDetails) {
-        if (!ensure_vehicle_punches_table($mysqli)) {
+        if (!ensure_vehicle_punch_gps_columns($mysqli)) {
             respond(['success' => false, 'message' => 'Vehicle punch storage is not ready.']);
         }
         $lookup = $mysqli->prepare('SELECT vp.session_token FROM vehicle_punches vp WHERE vp.emp_id = ? AND vp.vehicle_name = ? AND vp.vehicle_purpose = ? AND vp.session_type = "start" AND NOT EXISTS (SELECT 1 FROM vehicle_punches v2 WHERE v2.session_token = vp.session_token AND v2.session_type = "end") ORDER BY vp.timestamp DESC, vp.id DESC LIMIT 1');
@@ -575,18 +1306,27 @@ function register_employee_punch($mysqli, $empId, $timestamp, $vehicleName, $veh
 
         if (!empty($existingVehicle['session_token'])) {
             $sessionToken = $existingVehicle['session_token'];
-            $stmt = $mysqli->prepare('INSERT INTO vehicle_punches (emp_id, timestamp, vehicle_name, vehicle_purpose, session_token, session_type) VALUES (?, ?, ?, ?, ?, ?)');
+            if ($gpsLatitude !== null && $gpsLongitude !== null) {
+                $stmt = $mysqli->prepare('INSERT INTO vehicle_punches (emp_id, timestamp, vehicle_name, vehicle_purpose, session_token, session_type, gps_latitude, gps_longitude, gps_accuracy_meters) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+            } else {
+                $stmt = $mysqli->prepare('INSERT INTO vehicle_punches (emp_id, timestamp, vehicle_name, vehicle_purpose, session_token, session_type) VALUES (?, ?, ?, ?, ?, ?)');
+            }
             if (!$stmt) {
                 respond(['success' => false, 'message' => 'Could not complete vehicle session: ' . $mysqli->error]);
             }
             $sessionType = 'end';
-            $stmt->bind_param('ssssss', $empId, $timestamp, $vehicleName, $vehiclePurpose, $sessionToken, $sessionType);
+            if ($gpsLatitude !== null && $gpsLongitude !== null) {
+                $stmt->bind_param('ssssssddd', $empId, $timestamp, $vehicleName, $vehiclePurpose, $sessionToken, $sessionType, $gpsLatitude, $gpsLongitude, $gpsAccuracy);
+            } else {
+                $stmt->bind_param('ssssss', $empId, $timestamp, $vehicleName, $vehiclePurpose, $sessionToken, $sessionType);
+            }
             if (!$stmt->execute()) {
                 $error = $stmt->error;
                 $stmt->close();
                 respond(['success' => false, 'message' => 'Could not complete vehicle session: ' . $error]);
             }
             $stmt->close();
+            sync_attendance_daily_summary_for_day($mysqli, $empId, substr($timestamp, 0, 10));
             respond([
                 'success' => true,
                 'message' => 'Vehicle session completed successfully.',
@@ -617,12 +1357,20 @@ function register_employee_punch($mysqli, $empId, $timestamp, $vehicleName, $veh
         }
 
         $sessionToken = bin2hex(random_bytes(16));
-        $stmt = $mysqli->prepare('INSERT INTO vehicle_punches (emp_id, timestamp, vehicle_name, vehicle_purpose, session_token, session_type) VALUES (?, ?, ?, ?, ?, ?)');
+        if ($gpsLatitude !== null && $gpsLongitude !== null) {
+            $stmt = $mysqli->prepare('INSERT INTO vehicle_punches (emp_id, timestamp, vehicle_name, vehicle_purpose, session_token, session_type, gps_latitude, gps_longitude, gps_accuracy_meters) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        } else {
+            $stmt = $mysqli->prepare('INSERT INTO vehicle_punches (emp_id, timestamp, vehicle_name, vehicle_purpose, session_token, session_type) VALUES (?, ?, ?, ?, ?, ?)');
+        }
         if (!$stmt) {
             respond(['success' => false, 'message' => 'Could not start vehicle session: ' . $mysqli->error]);
         }
         $sessionType = 'start';
-        $stmt->bind_param('ssssss', $empId, $timestamp, $vehicleName, $vehiclePurpose, $sessionToken, $sessionType);
+        if ($gpsLatitude !== null && $gpsLongitude !== null) {
+            $stmt->bind_param('ssssssddd', $empId, $timestamp, $vehicleName, $vehiclePurpose, $sessionToken, $sessionType, $gpsLatitude, $gpsLongitude, $gpsAccuracy);
+        } else {
+            $stmt->bind_param('ssssss', $empId, $timestamp, $vehicleName, $vehiclePurpose, $sessionToken, $sessionType);
+        }
         if (!$stmt->execute()) {
             $error = $stmt->error;
             $stmt->close();
@@ -644,15 +1392,23 @@ function register_employee_punch($mysqli, $empId, $timestamp, $vehicleName, $veh
             respond(['success' => false, 'message' => 'Maximum 6 working sessions are allowed per day.']);
         }
 
-        if (ensure_vehicle_columns($mysqli)) {
-            $stmt = $mysqli->prepare('INSERT INTO attendance_punches (emp_id, timestamp, vehicle_name, vehicle_purpose) VALUES (?, ?, ?, ?)');
-            $stmt->bind_param('ssss', $empId, $timestamp, $vehicleName, $vehiclePurpose);
+        if (ensure_vehicle_columns($mysqli) && ensure_attendance_gps_columns($mysqli)) {
+            $stmt = $mysqli->prepare('INSERT INTO attendance_punches (emp_id, timestamp, vehicle_name, vehicle_purpose, gps_latitude, gps_longitude, gps_accuracy_meters) VALUES (?, ?, ?, ?, ?, ?, ?)');
+            $stmt->bind_param('ssssddd', $empId, $timestamp, $vehicleName, $vehiclePurpose, $gpsLatitude, $gpsLongitude, $gpsAccuracy);
         } else {
-            $stmt = $mysqli->prepare('INSERT INTO attendance_punches (emp_id, timestamp) VALUES (?, ?)');
-            $stmt->bind_param('ss', $empId, $timestamp);
+            respond(['success' => false, 'message' => 'Attendance GPS storage is not ready.']);
         }
-        $stmt->execute();
+        if (!$stmt || !$stmt->execute()) {
+            $error = $stmt ? $stmt->error : $mysqli->error;
+            if ($stmt) {
+                $stmt->close();
+            }
+            respond(['success' => false, 'message' => 'Could not save attendance punch: ' . $error]);
+        }
+        $stmt->close();
     }
+
+    sync_attendance_daily_summary_for_day($mysqli, $empId, substr($timestamp, 0, 10));
 
 
     respond([
@@ -727,9 +1483,479 @@ function build_session_details($timestamps) {
     ];
 }
 
+function ensure_attendance_daily_summary_table($mysqli) {
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+    if (runtime_schema_is_current($mysqli)) {
+        $ready = true;
+        return true;
+    }
+
+    $result = $mysqli->query("SHOW TABLES LIKE 'attendance_daily_summary'");
+    $ready = $result && $result->num_rows > 0;
+    if (!$ready) {
+        $createSql = "CREATE TABLE attendance_daily_summary (
+            emp_id VARCHAR(20) NOT NULL,
+            attendance_date DATE NOT NULL,
+            first_punch_at DATETIME NULL,
+            last_punch_at DATETIME NULL,
+            punch_count SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+            raw_times_text TEXT NOT NULL,
+            session_text TEXT NOT NULL,
+            session_count SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+            total_work_seconds INT UNSIGNED NOT NULL DEFAULT 0,
+            vehicle_name VARCHAR(100) NULL,
+            vehicle_purpose VARCHAR(255) NULL,
+            vehicle_text TEXT NOT NULL,
+            gps_point_count SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+            gps_points_json LONGTEXT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (emp_id, attendance_date),
+            INDEX idx_attendance_summary_date_emp (attendance_date, emp_id),
+            CONSTRAINT fk_attendance_summary_employee FOREIGN KEY (emp_id) REFERENCES employees(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+        $ready = $mysqli->query($createSql) === true;
+    }
+
+    return $ready;
+}
+
+function sync_attendance_daily_summary_for_day($mysqli, $empId, $date) {
+    if (!validate_employee_id($empId) || !is_valid_date_ymd($date)) {
+        return false;
+    }
+    if (!ensure_attendance_daily_summary_table($mysqli)) {
+        return false;
+    }
+
+    $dayStart = $date . ' 00:00:00';
+    $dayEnd = $date . ' 23:59:59';
+    $hasAttendanceGps = ensure_attendance_gps_columns($mysqli);
+    $attendanceGpsSelect = $hasAttendanceGps
+        ? 'timestamp, gps_latitude, gps_longitude, gps_accuracy_meters'
+        : 'timestamp, NULL AS gps_latitude, NULL AS gps_longitude, NULL AS gps_accuracy_meters';
+
+    $attendanceStmt = $mysqli->prepare('SELECT ' . $attendanceGpsSelect . ' FROM attendance_punches WHERE emp_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp');
+    if (!$attendanceStmt) {
+        return false;
+    }
+    $attendanceStmt->bind_param('sss', $empId, $dayStart, $dayEnd);
+    $attendanceStmt->execute();
+    $attendanceRows = $attendanceStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $attendanceStmt->close();
+
+    $vehicleRows = [];
+    if (ensure_vehicle_punches_table($mysqli)) {
+        $hasVehicleGps = ensure_vehicle_punch_gps_columns($mysqli);
+        $vehicleGpsSelect = $hasVehicleGps
+            ? 'timestamp, vehicle_name, vehicle_purpose, gps_latitude, gps_longitude, gps_accuracy_meters'
+            : 'timestamp, vehicle_name, vehicle_purpose, NULL AS gps_latitude, NULL AS gps_longitude, NULL AS gps_accuracy_meters';
+        $vehicleStmt = $mysqli->prepare('SELECT ' . $vehicleGpsSelect . ' FROM vehicle_punches WHERE emp_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp');
+        if ($vehicleStmt) {
+            $vehicleStmt->bind_param('sss', $empId, $dayStart, $dayEnd);
+            $vehicleStmt->execute();
+            $vehicleRows = $vehicleStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $vehicleStmt->close();
+        }
+    }
+
+    if (!$attendanceRows && !$vehicleRows) {
+        $deleteStmt = $mysqli->prepare('DELETE FROM attendance_daily_summary WHERE emp_id = ? AND attendance_date = ?');
+        if ($deleteStmt) {
+            $deleteStmt->bind_param('ss', $empId, $date);
+            $deleteStmt->execute();
+            $deleteStmt->close();
+        }
+        return true;
+    }
+
+    $timestamps = array_column($attendanceRows, 'timestamp');
+    $sessionData = build_session_details($timestamps);
+    $vehicleEntries = [];
+    $latestVehicleName = '';
+    $latestVehiclePurpose = '';
+    foreach ($vehicleRows as $vehicleRow) {
+        $entryText = trim(($vehicleRow['vehicle_name'] ?? '') . ' - ' . ($vehicleRow['vehicle_purpose'] ?? ''), ' -');
+        if ($entryText !== '') {
+            $vehicleEntries[] = $entryText;
+        }
+        $latestVehicleName = (string)($vehicleRow['vehicle_name'] ?? $latestVehicleName);
+        $latestVehiclePurpose = (string)($vehicleRow['vehicle_purpose'] ?? $latestVehiclePurpose);
+    }
+    $vehicleEntries = array_values(array_unique($vehicleEntries));
+
+    $gpsEntries = [];
+    foreach ($attendanceRows as $row) {
+        if ($row['gps_latitude'] !== null && $row['gps_longitude'] !== null) {
+            $gpsEntries[] = [
+                'timestamp' => $row['timestamp'],
+                'latitude' => round((float)$row['gps_latitude'], 7),
+                'longitude' => round((float)$row['gps_longitude'], 7),
+                'accuracy' => $row['gps_accuracy_meters'] !== null ? round((float)$row['gps_accuracy_meters'], 2) : null,
+                'source' => 'regular',
+                'label' => 'Regular punch',
+            ];
+        }
+    }
+    foreach ($vehicleRows as $row) {
+        if ($row['gps_latitude'] !== null && $row['gps_longitude'] !== null) {
+            $gpsEntries[] = [
+                'timestamp' => $row['timestamp'],
+                'latitude' => round((float)$row['gps_latitude'], 7),
+                'longitude' => round((float)$row['gps_longitude'], 7),
+                'accuracy' => $row['gps_accuracy_meters'] !== null ? round((float)$row['gps_accuracy_meters'], 2) : null,
+                'source' => 'vehicle',
+                'label' => 'Vehicle punch',
+            ];
+        }
+    }
+    usort($gpsEntries, static fn($left, $right) => strcmp((string)($left['timestamp'] ?? ''), (string)($right['timestamp'] ?? '')));
+
+    $firstPunchAt = $timestamps ? $timestamps[0] : null;
+    $lastPunchAt = $timestamps ? $timestamps[count($timestamps) - 1] : null;
+    $punchCount = count($timestamps);
+    $rawTimesText = implode(', ', array_map(static fn($ts) => substr($ts, 11), $timestamps));
+    $sessionText = (string)($sessionData['sessionText'] ?? 'No complete session');
+    $sessionCount = (int)($sessionData['sessionCount'] ?? 0);
+    $totalWorkSeconds = (int)($sessionData['totalSeconds'] ?? 0);
+    $vehicleText = $vehicleEntries ? implode(' | ', $vehicleEntries) : 'No vehicle used';
+    $gpsPointCount = count($gpsEntries);
+    $gpsPointsJson = $gpsPointCount > 0 ? json_encode($gpsEntries, JSON_UNESCAPED_SLASHES) : '[]';
+
+    $upsertStmt = $mysqli->prepare('INSERT INTO attendance_daily_summary (emp_id, attendance_date, first_punch_at, last_punch_at, punch_count, raw_times_text, session_text, session_count, total_work_seconds, vehicle_name, vehicle_purpose, vehicle_text, gps_point_count, gps_points_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE first_punch_at = VALUES(first_punch_at), last_punch_at = VALUES(last_punch_at), punch_count = VALUES(punch_count), raw_times_text = VALUES(raw_times_text), session_text = VALUES(session_text), session_count = VALUES(session_count), total_work_seconds = VALUES(total_work_seconds), vehicle_name = VALUES(vehicle_name), vehicle_purpose = VALUES(vehicle_purpose), vehicle_text = VALUES(vehicle_text), gps_point_count = VALUES(gps_point_count), gps_points_json = VALUES(gps_points_json)');
+    if (!$upsertStmt) {
+        return false;
+    }
+    $upsertStmt->bind_param('ssssissiisssis', $empId, $date, $firstPunchAt, $lastPunchAt, $punchCount, $rawTimesText, $sessionText, $sessionCount, $totalWorkSeconds, $latestVehicleName, $latestVehiclePurpose, $vehicleText, $gpsPointCount, $gpsPointsJson);
+    $ok = $upsertStmt->execute();
+    $upsertStmt->close();
+
+    return $ok;
+}
+
+function sync_attendance_daily_summary_range($mysqli, $start, $end, $department, $empIdFilter) {
+    if (!ensure_attendance_daily_summary_table($mysqli)) {
+        return false;
+    }
+    ensure_attendance_high_volume_indexes($mysqli);
+
+    $seen = [];
+    $rangeStart = $start . ' 00:00:00';
+    $rangeEnd = $end . ' 23:59:59';
+    $queries = [
+        ['sql' => 'SELECT DISTINCT p.emp_id, DATE(p.timestamp) AS attendance_date FROM attendance_punches p JOIN employees e ON p.emp_id = e.id WHERE p.timestamp BETWEEN ? AND ?', 'requiresVehicle' => false],
+        ['sql' => 'SELECT DISTINCT v.emp_id, DATE(v.timestamp) AS attendance_date FROM vehicle_punches v JOIN employees e ON v.emp_id = e.id WHERE v.timestamp BETWEEN ? AND ?', 'requiresVehicle' => true],
+    ];
+
+    foreach ($queries as $queryMeta) {
+        if ($queryMeta['requiresVehicle'] && !ensure_vehicle_punches_table($mysqli)) {
+            continue;
+        }
+        $params = [$rangeStart, $rangeEnd];
+        $sql = $queryMeta['sql'];
+        if ($department !== 'All') {
+            $sql .= ' AND e.department = ?';
+            $params[] = $department;
+        }
+        if ($empIdFilter !== 'All') {
+            $sql .= ' AND e.id = ?';
+            $params[] = $empIdFilter;
+        }
+        $stmt = $mysqli->prepare($sql);
+        if (!$stmt) {
+            continue;
+        }
+        if (count($params) === 4) {
+            $stmt->bind_param('ssss', $params[0], $params[1], $params[2], $params[3]);
+        } elseif (count($params) === 3) {
+            $stmt->bind_param('sss', $params[0], $params[1], $params[2]);
+        } else {
+            $stmt->bind_param('ss', $params[0], $params[1]);
+        }
+        $stmt->execute();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        foreach ($rows as $row) {
+            $summaryDate = (string)($row['attendance_date'] ?? '');
+            $summaryEmpId = (string)($row['emp_id'] ?? '');
+            $key = $summaryEmpId . '|' . $summaryDate;
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            sync_attendance_daily_summary_for_day($mysqli, $summaryEmpId, $summaryDate);
+        }
+    }
+
+    return true;
+}
+
+function load_employees_for_range($mysqli, $department, $empIdFilter) {
+    $employeeQuery = 'SELECT id, name, department FROM employees';
+    $employeeParams = [];
+    $employeeWhere = [];
+    if ($department !== 'All') {
+        $employeeWhere[] = 'department = ?';
+        $employeeParams[] = $department;
+    }
+    if ($empIdFilter !== 'All') {
+        $employeeWhere[] = 'id = ?';
+        $employeeParams[] = $empIdFilter;
+    }
+    if ($employeeWhere) {
+        $employeeQuery .= ' WHERE ' . implode(' AND ', $employeeWhere);
+    }
+    $employeeQuery .= ' ORDER BY id';
+    $employeeStmt = $mysqli->prepare($employeeQuery);
+    if (!$employeeStmt) {
+        return [];
+    }
+    if (count($employeeParams) === 2) {
+        $employeeStmt->bind_param('ss', $employeeParams[0], $employeeParams[1]);
+    } elseif (count($employeeParams) === 1) {
+        $employeeStmt->bind_param('s', $employeeParams[0]);
+    }
+    $employeeStmt->execute();
+    $rows = $employeeStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $employeeStmt->close();
+    return $rows;
+}
+
+function build_attendance_dataset($mysqli, $start, $end, $department, $empIdFilter, $canViewGps = false) {
+    sync_attendance_daily_summary_range($mysqli, $start, $end, $department, $empIdFilter);
+
+    $holidayResult = $mysqli->query('SELECT `date`, description FROM holidays');
+    $holidayMap = [];
+    while ($holidayResult && ($row = $holidayResult->fetch_assoc())) {
+        $holidayMap[$row['date']] = $row['description'];
+    }
+
+    $employeesForRange = load_employees_for_range($mysqli, $department, $empIdFilter);
+    $summaryParams = [$start, $end];
+    $summaryQuery = 'SELECT s.emp_id, s.attendance_date, s.punch_count, s.raw_times_text, s.session_text, s.session_count, s.total_work_seconds, s.vehicle_name, s.vehicle_purpose, s.vehicle_text, s.gps_point_count, s.gps_points_json, e.name, e.department FROM attendance_daily_summary s JOIN employees e ON s.emp_id = e.id WHERE s.attendance_date BETWEEN ? AND ?';
+    if ($department !== 'All') {
+        $summaryQuery .= ' AND e.department = ?';
+        $summaryParams[] = $department;
+    }
+    if ($empIdFilter !== 'All') {
+        $summaryQuery .= ' AND e.id = ?';
+        $summaryParams[] = $empIdFilter;
+    }
+    $summaryQuery .= ' ORDER BY s.emp_id, s.attendance_date';
+    $summaryStmt = $mysqli->prepare($summaryQuery);
+    $summaryRows = [];
+    if ($summaryStmt) {
+        if (count($summaryParams) === 4) {
+            $summaryStmt->bind_param('ssss', $summaryParams[0], $summaryParams[1], $summaryParams[2], $summaryParams[3]);
+        } elseif (count($summaryParams) === 3) {
+            $summaryStmt->bind_param('sss', $summaryParams[0], $summaryParams[1], $summaryParams[2]);
+        } else {
+            $summaryStmt->bind_param('ss', $summaryParams[0], $summaryParams[1]);
+        }
+        $summaryStmt->execute();
+        $summaryRows = $summaryStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $summaryStmt->close();
+    }
+
+    $records = [];
+    foreach ($summaryRows as $row) {
+        $dateKey = (string)($row['attendance_date'] ?? '');
+        $key = (string)($row['emp_id'] ?? '') . '_' . $dateKey;
+        $gpsEntries = [];
+        if ($canViewGps && !empty($row['gps_points_json'])) {
+            $decodedGps = json_decode((string)$row['gps_points_json'], true);
+            if (is_array($decodedGps)) {
+                $gpsEntries = $decodedGps;
+            }
+        }
+        $records[$key] = [
+            'empId' => $row['emp_id'],
+            'name' => $row['name'],
+            'department' => $row['department'],
+            'date' => $dateKey,
+            'hasAttendance' => (int)($row['punch_count'] ?? 0) > 0,
+            'sessionCount' => (int)($row['session_count'] ?? 0),
+            'sessionText' => (string)($row['session_text'] ?? 'No complete session'),
+            'rawTimes' => (string)($row['raw_times_text'] ?? ''),
+            'totalSeconds' => (int)($row['total_work_seconds'] ?? 0),
+            'vehicleName' => (string)($row['vehicle_name'] ?? ''),
+            'vehiclePurpose' => (string)($row['vehicle_purpose'] ?? ''),
+            'vehicleText' => (string)($row['vehicle_text'] ?? 'No vehicle used'),
+            'gpsEntries' => $gpsEntries,
+        ];
+    }
+
+    $startDate = new DateTime($start);
+    $endDate = new DateTime($end);
+    foreach ($employeesForRange as $employeeRow) {
+        $cursor = clone $startDate;
+        while ($cursor <= $endDate) {
+            $dateKey = $cursor->format('Y-m-d');
+            $key = $employeeRow['id'] . '_' . $dateKey;
+            if (!isset($records[$key])) {
+                $records[$key] = [
+                    'empId' => $employeeRow['id'],
+                    'name' => $employeeRow['name'],
+                    'department' => $employeeRow['department'],
+                    'date' => $dateKey,
+                    'hasAttendance' => false,
+                    'sessionCount' => 0,
+                    'sessionText' => 'No complete session',
+                    'rawTimes' => '',
+                    'totalSeconds' => 0,
+                    'vehicleName' => '',
+                    'vehiclePurpose' => '',
+                    'vehicleText' => 'No vehicle used',
+                    'gpsEntries' => [],
+                ];
+            }
+            $cursor->modify('+1 day');
+        }
+    }
+
+    $recordList = array_values($records);
+    usort($recordList, static function ($left, $right) {
+        $cmpEmp = strcmp((string)($left['empId'] ?? ''), (string)($right['empId'] ?? ''));
+        if ($cmpEmp !== 0) {
+            return $cmpEmp;
+        }
+        return strcmp((string)($left['date'] ?? ''), (string)($right['date'] ?? ''));
+    });
+
+    $output = [];
+    $summaryByEmployee = [];
+    foreach ($recordList as $record) {
+        $totalSeconds = (int)($record['totalSeconds'] ?? 0);
+        $totalHours = $totalSeconds / 3600;
+        $dayOfWeek = date('w', strtotime($record['date']));
+        $isHoliday = isset($holidayMap[$record['date']]);
+        $isSpecial = $dayOfWeek == 6 || $isHoliday;
+        $dayType = $isHoliday ? 'Holiday (' . $holidayMap[$record['date']] . ')' : ($dayOfWeek == 6 ? 'Saturday Weekend' : 'Weekday');
+        $hasAttendance = (bool)($record['hasAttendance'] ?? false);
+        $regularHours = 0;
+        $otHours = 0;
+        if ($isSpecial) {
+            $otHours = $totalHours;
+        } else {
+            $regularHours = min(8, $totalHours);
+            $otHours = max(0, $totalHours - 8);
+        }
+
+        $leaveType = '-';
+        $leaveDays = 0.0;
+        if (!$isSpecial) {
+            if ($hasAttendance) {
+                if ((int)($record['sessionCount'] ?? 0) === 1 && $totalHours < 8) {
+                    $leaveType = 'Half Leave';
+                    $leaveDays = 0.5;
+                } else {
+                    $leaveType = 'Present';
+                }
+            } else {
+                $leaveType = 'Full Leave';
+                $leaveDays = 1.0;
+            }
+        }
+
+        $sessionText = (string)($record['sessionText'] ?? 'No complete session');
+        if (!$hasAttendance) {
+            $sessionText = $isSpecial ? 'No attendance' : 'Leave';
+        }
+
+        $empId = $record['empId'];
+        if (!isset($summaryByEmployee[$empId])) {
+            $summaryByEmployee[$empId] = [
+                'empId' => $record['empId'],
+                'name' => $record['name'],
+                'department' => $record['department'],
+                'totalDays' => 0,
+                'weekendDays' => 0,
+                'holidayDays' => 0,
+                'presentDays' => 0,
+                'regularHours' => 0.0,
+                'otHours' => 0.0,
+                'totalHours' => 0.0,
+                'leaveDays' => 0.0,
+                'halfLeaveDays' => 0.0,
+                'fullLeaveDays' => 0.0,
+            ];
+        }
+        $summaryByEmployee[$empId]['totalDays'] += 1;
+        if ($dayOfWeek == 6) {
+            $summaryByEmployee[$empId]['weekendDays'] += 1;
+        }
+        if ($isHoliday) {
+            $summaryByEmployee[$empId]['holidayDays'] += 1;
+        }
+        if (!$isSpecial && $leaveType === 'Present') {
+            $summaryByEmployee[$empId]['presentDays'] += 1;
+        }
+        $summaryByEmployee[$empId]['regularHours'] += $regularHours;
+        $summaryByEmployee[$empId]['otHours'] += $otHours;
+        $summaryByEmployee[$empId]['totalHours'] += $totalHours;
+        $summaryByEmployee[$empId]['leaveDays'] += $leaveDays;
+        if ($leaveType === 'Half Leave') {
+            $summaryByEmployee[$empId]['halfLeaveDays'] += 0.5;
+        } elseif ($leaveType === 'Full Leave') {
+            $summaryByEmployee[$empId]['fullLeaveDays'] += 1.0;
+        }
+
+        $gpsEntries = $canViewGps ? array_values($record['gpsEntries'] ?? []) : [];
+        $output[] = [
+            'empId' => $record['empId'],
+            'name' => $record['name'],
+            'department' => $record['department'],
+            'date' => $record['date'],
+            'dayType' => $dayType,
+            'sessionCount' => (int)($record['sessionCount'] ?? 0),
+            'sessionText' => $sessionText,
+            'rawTimes' => (string)($record['rawTimes'] ?? ''),
+            'vehicleName' => $record['vehicleName'] ?? '',
+            'vehiclePurpose' => $record['vehiclePurpose'] ?? '',
+            'vehicleText' => $record['vehicleText'] ?? 'No vehicle used',
+            'gpsPointCount' => $canViewGps ? count($gpsEntries) : 0,
+            'gpsPoints' => $canViewGps ? $gpsEntries : [],
+            'latestGps' => $canViewGps && $gpsEntries ? $gpsEntries[count($gpsEntries) - 1] : null,
+            'regularHours' => round($regularHours, 2),
+            'otHours' => round($otHours, 2),
+            'totalHours' => round($totalHours, 2),
+            'leaveType' => $leaveType,
+            'leaveDays' => round($leaveDays, 2),
+            'isSpecial' => $isSpecial,
+        ];
+    }
+
+    $summaryList = [];
+    foreach ($summaryByEmployee as $summary) {
+        $summaryList[] = [
+            'empId' => $summary['empId'],
+            'name' => $summary['name'],
+            'department' => $summary['department'],
+            'totalDays' => $summary['totalDays'],
+            'weekendDays' => $summary['weekendDays'],
+            'holidayDays' => $summary['holidayDays'],
+            'presentDays' => $summary['presentDays'],
+            'regularHours' => round($summary['regularHours'], 2),
+            'otHours' => round($summary['otHours'], 2),
+            'totalHours' => round($summary['totalHours'], 2),
+            'leaveDays' => round($summary['leaveDays'], 2),
+            'halfLeaveDays' => round($summary['halfLeaveDays'], 2),
+            'fullLeaveDays' => round($summary['fullLeaveDays'], 2),
+        ];
+    }
+    usort($summaryList, static fn($a, $b) => strcmp($a['empId'], $b['empId']));
+
+    return ['records' => $output, 'summary' => $summaryList];
+}
+
 function xml_escape($value) {
     return htmlspecialchars((string)$value, ENT_QUOTES | ENT_XML1, 'UTF-8');
 }
+
+bootstrap_runtime_schema($mysqli);
 
 // Pure-PHP ZIP reader (no ZipArchive needed).
 // Scans local file headers in the raw ZIP bytes.
@@ -1017,7 +2243,9 @@ switch ($action) {
 
         $role = $submittedRole;
         $designationValue = '';
-        $empRoleStmt = ensure_statement($mysqli->prepare('SELECT can_edit_attendance, designation FROM employees WHERE id = ? LIMIT 1'), $mysqli, 'Could not validate employee role');
+        ensure_employee_deleted_flag($mysqli);
+        ensure_employee_purged_flag($mysqli);
+        $empRoleStmt = ensure_statement($mysqli->prepare('SELECT can_edit_attendance, designation FROM employees WHERE id = ? AND is_deleted = 0 AND is_purged = 0 LIMIT 1'), $mysqli, 'Could not validate employee role');
         $empRoleStmt->bind_param('s', $username);
         execute_statement_or_fail($empRoleStmt, 'Could not validate employee role');
         $employee = $empRoleStmt->get_result()->fetch_assoc();
@@ -1096,33 +2324,64 @@ switch ($action) {
         if ($id <= 0) {
             respond(['success' => false, 'message' => 'Valid user ID is required.']);
         }
-        if ((int)($_SESSION['user_id'] ?? 0) === $id) {
-            respond(['success' => false, 'message' => 'You cannot delete your own logged-in account.']);
-        }
-
-        $countRes = $mysqli->query('SELECT COUNT(*) AS cnt FROM users');
-        $totalUsers = $countRes ? (int)($countRes->fetch_assoc()['cnt'] ?? 0) : 0;
+        $totalUsers = count_user_accounts($mysqli);
         if ($totalUsers <= 1) {
             respond(['success' => false, 'message' => 'At least one user account must remain.']);
         }
 
-        $stmt = $mysqli->prepare('DELETE FROM users WHERE id = ?');
-        $stmt->bind_param('i', $id);
-        $stmt->execute();
-        $affected = $stmt->affected_rows;
-        $stmt->close();
-        if ($affected < 1) {
-            respond(['success' => false, 'message' => 'User not found.']);
+        $hasVehiclePunches = ensure_vehicle_punches_table($mysqli);
+        $hasUsersTable = ensure_users_table($mysqli);
+
+        $mysqli->begin_transaction();
+        try {
+            delete_user_bundle_inner($mysqli, $id, $hasVehiclePunches, $hasUsersTable);
+            $mysqli->commit();
+        } catch (Throwable $e) {
+            $mysqli->rollback();
+            respond(['success' => false, 'message' => $e->getMessage()]);
         }
 
-        respond(['success' => true, 'message' => 'User deleted successfully.']);
+        respond(['success' => true, 'message' => 'User deleted successfully. Linked employee attendance logs were preserved.']);
+        break;
+
+    case 'deleteUsers':
+        require_admin();
+        $rawIds = json_decode((string)($_POST['ids'] ?? '[]'), true);
+        if (!is_array($rawIds)) {
+            $rawIds = [];
+        }
+        $ids = parse_bulk_user_ids($rawIds);
+        if (!$ids) {
+            respond(['success' => false, 'message' => 'Select at least one user to delete.']);
+        }
+
+        $totalUsers = count_user_accounts($mysqli);
+        if ($totalUsers - count($ids) < 1) {
+            respond(['success' => false, 'message' => 'At least one user account must remain.']);
+        }
+
+        $hasVehiclePunches = ensure_vehicle_punches_table($mysqli);
+        $hasUsersTable = ensure_users_table($mysqli);
+
+        $mysqli->begin_transaction();
+        try {
+            foreach ($ids as $userId) {
+                delete_user_bundle_inner($mysqli, $userId, $hasVehiclePunches, $hasUsersTable);
+            }
+            $mysqli->commit();
+        } catch (Throwable $e) {
+            $mysqli->rollback();
+            respond(['success' => false, 'message' => $e->getMessage()]);
+        }
+
+        respond(['success' => true, 'message' => count($ids) . ' user account(s) deleted successfully. Linked employee attendance logs were preserved.']);
         break;
 
     case 'listEmployees':
-        $syncErrors = [];
-        sync_all_employee_login_users($mysqli, $syncErrors);
         $hasDesig = ensure_designation_column($mysqli);
         $hasHrPerm = ensure_hr_permission_column($mysqli);
+        ensure_employee_deleted_flag($mysqli);
+        ensure_employee_purged_flag($mysqli);
         $hasVehiclePunches = ensure_vehicle_punches_table($mysqli);
         $viewerEmpId = '';
         if (is_viewer_role()) {
@@ -1138,9 +2397,9 @@ switch ($action) {
         } else {
             $selectCols .= "'' AS last_vehicle_name, '' AS last_vehicle_purpose";
         }
-        $sql = "SELECT {$selectCols} FROM employees";
+        $sql = "SELECT {$selectCols} FROM employees WHERE is_deleted = 0 AND is_purged = 0";
         if ($viewerEmpId !== '') {
-            $sql .= ' WHERE id = ?';
+            $sql .= ' AND id = ?';
         }
         $sql .= ' ORDER BY id';
         $stmt = $mysqli->prepare($sql);
@@ -1151,6 +2410,20 @@ switch ($action) {
         $result = $stmt->get_result();
         $employees = $result->fetch_all(MYSQLI_ASSOC);
         respond(['success' => true, 'employees' => $employees]);
+        break;
+
+    case 'listArchivedEmployees':
+        require_admin();
+        $hasDesig = ensure_designation_column($mysqli);
+        $hasHrPerm = ensure_hr_permission_column($mysqli);
+        ensure_employee_deleted_flag($mysqli);
+        ensure_employee_purged_flag($mysqli);
+        $sql = 'SELECT id, name, ' . ($hasDesig ? 'designation, ' : '"" AS designation, ') . 'department, ' . ($hasHrPerm ? 'can_edit_attendance ' : '0 AS can_edit_attendance ') . 'FROM employees WHERE is_deleted = 1 AND is_purged = 0 ORDER BY id';
+        $stmt = $mysqli->prepare($sql);
+        execute_statement_or_fail($stmt, 'Could not load archived employees');
+        $archivedEmployees = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+        respond(['success' => true, 'employees' => $archivedEmployees]);
         break;
 
     case 'saveEmployee':
@@ -1175,6 +2448,7 @@ switch ($action) {
         if (!is_valid_department($department)) {
             respond(['success' => false, 'message' => 'Invalid department selected.']);
         }
+        ensure_employee_deleted_flag($mysqli);
         $exists = $mysqli->prepare('SELECT COUNT(*) FROM employees WHERE id = ?');
         $exists->bind_param('s', $id);
         $exists->execute();
@@ -1186,7 +2460,7 @@ switch ($action) {
         $withHrPermission = ensure_hr_permission_column($mysqli);
 
         if ($count > 0) {
-            $setCols = 'name = ?, ' . ($withDesig ? 'designation = ?, ' : '') . 'department = ?' . ($withHrPermission ? ', can_edit_attendance = ?' : '');
+            $setCols = 'name = ?, ' . ($withDesig ? 'designation = ?, ' : '') . 'department = ?' . ($withHrPermission ? ', can_edit_attendance = ?' : '') . ', is_deleted = 0, is_purged = 0';
             $sql = "UPDATE employees SET {$setCols} WHERE id = ?";
             $stmt = $mysqli->prepare($sql);
             if ($withDesig && $withHrPermission) {
@@ -1245,55 +2519,88 @@ switch ($action) {
         $hasVehiclePunches = ensure_vehicle_punches_table($mysqli);
         $hasUsersTable = ensure_users_table($mysqli);
 
+        $totalUsers = count_user_accounts($mysqli);
+        $linkedUserDeletes = $hasUsersTable ? count_linked_users_for_employees($mysqli, [$id]) : 0;
+        if ($linkedUserDeletes > 0 && ($totalUsers - $linkedUserDeletes) < 1) {
+            respond(['success' => false, 'message' => 'At least one user account must remain.']);
+        }
+
         $mysqli->begin_transaction();
         try {
-            if ($hasVehiclePunches) {
-                $vehicleStmt = $mysqli->prepare('DELETE FROM vehicle_punches WHERE emp_id = ?');
-                if (!$vehicleStmt) {
-                    throw new RuntimeException('Could not prepare vehicle cleanup statement.');
-                }
-                $vehicleStmt->bind_param('s', $id);
-                if (!$vehicleStmt->execute()) {
-                    throw new RuntimeException('Could not remove vehicle records: ' . $vehicleStmt->error);
-                }
-                $vehicleStmt->close();
-            }
+            delete_employee_bundle_inner($mysqli, $id, $hasVehiclePunches, $hasUsersTable);
 
-            $attendanceStmt = $mysqli->prepare('DELETE FROM attendance_punches WHERE emp_id = ?');
-            if (!$attendanceStmt) {
-                throw new RuntimeException('Could not prepare attendance cleanup statement.');
-            }
-            $attendanceStmt->bind_param('s', $id);
-            if (!$attendanceStmt->execute()) {
-                throw new RuntimeException('Could not remove attendance records: ' . $attendanceStmt->error);
-            }
-            $attendanceStmt->close();
+            $mysqli->commit();
+        } catch (Throwable $e) {
+            $mysqli->rollback();
+            respond(['success' => false, 'message' => $e->getMessage()]);
+        }
 
-            if ($hasUsersTable) {
-                $userStmt = $mysqli->prepare('DELETE FROM users WHERE username = ?');
-                if (!$userStmt) {
-                    throw new RuntimeException('Could not prepare login cleanup statement.');
-                }
-                $userStmt->bind_param('s', $id);
-                if (!$userStmt->execute()) {
-                    throw new RuntimeException('Could not remove login user: ' . $userStmt->error);
-                }
-                $userStmt->close();
-            }
+        respond(['success' => true, 'message' => 'Employee deleted successfully. Attendance logs were preserved.']);
+        break;
 
-            $employeeStmt = $mysqli->prepare('DELETE FROM employees WHERE id = ?');
-            if (!$employeeStmt) {
-                throw new RuntimeException('Could not prepare employee delete statement.');
-            }
-            $employeeStmt->bind_param('s', $id);
-            if (!$employeeStmt->execute()) {
-                throw new RuntimeException('Could not delete employee: ' . $employeeStmt->error);
-            }
-            $deletedEmployees = $employeeStmt->affected_rows;
-            $employeeStmt->close();
+    case 'deleteEmployees':
+        require_admin();
+        $rawIds = json_decode((string)($_POST['ids'] ?? '[]'), true);
+        if (!is_array($rawIds)) {
+            $rawIds = [];
+        }
+        $ids = parse_bulk_employee_ids($rawIds);
+        if (!$ids) {
+            respond(['success' => false, 'message' => 'Select at least one employee to delete.']);
+        }
 
-            if ($deletedEmployees < 1) {
-                throw new RuntimeException('Employee not found.');
+        $hasVehiclePunches = ensure_vehicle_punches_table($mysqli);
+        $hasUsersTable = ensure_users_table($mysqli);
+        $totalUsers = count_user_accounts($mysqli);
+        $linkedUserDeletes = $hasUsersTable ? count_linked_users_for_employees($mysqli, $ids) : 0;
+        if ($linkedUserDeletes > 0 && ($totalUsers - $linkedUserDeletes) < 1) {
+            respond(['success' => false, 'message' => 'At least one user account must remain.']);
+        }
+
+        $mysqli->begin_transaction();
+        try {
+            foreach ($ids as $employeeId) {
+                delete_employee_bundle_inner($mysqli, $employeeId, $hasVehiclePunches, $hasUsersTable);
+            }
+            $mysqli->commit();
+        } catch (Throwable $e) {
+            $mysqli->rollback();
+            respond(['success' => false, 'message' => $e->getMessage()]);
+        }
+
+        respond(['success' => true, 'message' => count($ids) . ' employee record(s) deleted successfully. Attendance logs were preserved.']);
+        break;
+
+    case 'restoreEmployee':
+        require_admin();
+        $id = sanitize($_POST['id'] ?? '');
+        if (!$id || !validate_employee_id($id)) {
+            respond(['success' => false, 'message' => 'Valid employee ID is required.']);
+        }
+        ensure_employee_deleted_flag($mysqli);
+        ensure_employee_purged_flag($mysqli);
+        $withDesig = ensure_designation_column($mysqli);
+        $withHrPermission = ensure_hr_permission_column($mysqli);
+        $selectSql = 'SELECT id, ' . ($withDesig ? 'designation, ' : '"" AS designation, ') . ($withHrPermission ? 'can_edit_attendance ' : '0 AS can_edit_attendance ') . 'FROM employees WHERE id = ? AND is_deleted = 1 AND is_purged = 0 LIMIT 1';
+        $stmt = ensure_statement($mysqli->prepare($selectSql), $mysqli, 'Could not load archived employee');
+        $stmt->bind_param('s', $id);
+        execute_statement_or_fail($stmt, 'Could not load archived employee');
+        $employee = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$employee) {
+            respond(['success' => false, 'message' => 'Archived employee not found.']);
+        }
+
+        $mysqli->begin_transaction();
+        try {
+            $restoreStmt = ensure_statement($mysqli->prepare('UPDATE employees SET is_deleted = 0, is_purged = 0 WHERE id = ? AND is_deleted = 1 AND is_purged = 0'), $mysqli, 'Could not prepare employee restore');
+            $restoreStmt->bind_param('s', $id);
+            execute_statement_or_fail($restoreStmt, 'Could not restore employee');
+            $restoreStmt->close();
+
+            $syncError = '';
+            if (!upsert_employee_login_user($mysqli, $id, (string)($employee['designation'] ?? ''), (int)($employee['can_edit_attendance'] ?? 0), $syncError)) {
+                throw new RuntimeException($syncError ?: 'Could not restore login user.');
             }
 
             $mysqli->commit();
@@ -1302,7 +2609,107 @@ switch ($action) {
             respond(['success' => false, 'message' => $e->getMessage()]);
         }
 
-        respond(['success' => true, 'message' => 'Employee deleted successfully.']);
+        respond(['success' => true, 'message' => 'Archived employee restored successfully.']);
+        break;
+
+    case 'restoreEmployees':
+        require_admin();
+        $rawIds = json_decode((string)($_POST['ids'] ?? '[]'), true);
+        if (!is_array($rawIds)) {
+            $rawIds = [];
+        }
+        $ids = parse_bulk_employee_ids($rawIds);
+        if (!$ids) {
+            respond(['success' => false, 'message' => 'Select at least one archived employee to restore.']);
+        }
+
+        ensure_employee_deleted_flag($mysqli);
+        ensure_employee_purged_flag($mysqli);
+        $withDesig = ensure_designation_column($mysqli);
+        $withHrPermission = ensure_hr_permission_column($mysqli);
+        $archivedEmployees = [];
+        $selectSql = 'SELECT id, ' . ($withDesig ? 'designation, ' : '"" AS designation, ') . ($withHrPermission ? 'can_edit_attendance ' : '0 AS can_edit_attendance ') . 'FROM employees WHERE id = ? AND is_deleted = 1 AND is_purged = 0 LIMIT 1';
+        $selectStmt = ensure_statement($mysqli->prepare($selectSql), $mysqli, 'Could not prepare archived employee lookup');
+        foreach ($ids as $id) {
+            $selectStmt->bind_param('s', $id);
+            execute_statement_or_fail($selectStmt, 'Could not load archived employee');
+            $employee = $selectStmt->get_result()->fetch_assoc();
+            if (!$employee) {
+                $selectStmt->close();
+                respond(['success' => false, 'message' => 'Archived employee not found: ' . $id]);
+            }
+            $archivedEmployees[] = $employee;
+        }
+        $selectStmt->close();
+
+        $restoreStmt = ensure_statement($mysqli->prepare('UPDATE employees SET is_deleted = 0, is_purged = 0 WHERE id = ? AND is_deleted = 1 AND is_purged = 0'), $mysqli, 'Could not prepare employee restore');
+        $mysqli->begin_transaction();
+        try {
+            foreach ($archivedEmployees as $employee) {
+                $id = (string)($employee['id'] ?? '');
+                $restoreStmt->bind_param('s', $id);
+                execute_statement_or_fail($restoreStmt, 'Could not restore employee');
+
+                $syncError = '';
+                if (!upsert_employee_login_user($mysqli, $id, (string)($employee['designation'] ?? ''), (int)($employee['can_edit_attendance'] ?? 0), $syncError)) {
+                    throw new RuntimeException($syncError ?: 'Could not restore login user.');
+                }
+            }
+            $restoreStmt->close();
+            $mysqli->commit();
+        } catch (Throwable $e) {
+            $restoreStmt->close();
+            $mysqli->rollback();
+            respond(['success' => false, 'message' => $e->getMessage()]);
+        }
+
+        respond(['success' => true, 'message' => count($archivedEmployees) . ' archived employee(s) restored successfully.']);
+        break;
+
+    case 'purgeArchivedEmployee':
+        require_admin();
+        $id = sanitize($_POST['id'] ?? '');
+        if (!$id || !validate_employee_id($id)) {
+            respond(['success' => false, 'message' => 'Valid employee ID is required.']);
+        }
+
+        $hasUsersTable = ensure_users_table($mysqli);
+        $mysqli->begin_transaction();
+        try {
+            purge_archived_employee_bundle_inner($mysqli, $id, $hasUsersTable);
+            $mysqli->commit();
+        } catch (Throwable $e) {
+            $mysqli->rollback();
+            respond(['success' => false, 'message' => $e->getMessage()]);
+        }
+
+        respond(['success' => true, 'message' => 'Archived employee removed from staff directories. Attendance records were preserved.']);
+        break;
+
+    case 'purgeArchivedEmployees':
+        require_admin();
+        $rawIds = json_decode((string)($_POST['ids'] ?? '[]'), true);
+        if (!is_array($rawIds)) {
+            $rawIds = [];
+        }
+        $ids = parse_bulk_employee_ids($rawIds);
+        if (!$ids) {
+            respond(['success' => false, 'message' => 'Select at least one archived employee to delete.']);
+        }
+
+        $hasUsersTable = ensure_users_table($mysqli);
+        $mysqli->begin_transaction();
+        try {
+            foreach ($ids as $employeeId) {
+                purge_archived_employee_bundle_inner($mysqli, $employeeId, $hasUsersTable);
+            }
+            $mysqli->commit();
+        } catch (Throwable $e) {
+            $mysqli->rollback();
+            respond(['success' => false, 'message' => $e->getMessage()]);
+        }
+
+        respond(['success' => true, 'message' => count($ids) . ' archived employee record(s) removed from staff directories. Attendance records were preserved.']);
         break;
 
     case 'listHolidays':
@@ -1350,7 +2757,8 @@ switch ($action) {
         $end = sanitize($_GET['end'] ?? '');
         $department = sanitize($_GET['department'] ?? 'All');
         $empId = sanitize($_GET['empId'] ?? 'All');
-        if (is_viewer_role()) {
+        $leaveFullAccess = has_leave_form_full_access($mysqli);
+        if (!$leaveFullAccess && is_viewer_role()) {
             $viewerEmpId = get_logged_in_employee_id($mysqli);
             if ($viewerEmpId === '') {
                 respond(['success' => true, 'leaveRequests' => []]);
@@ -1364,12 +2772,12 @@ switch ($action) {
         $types = '';
 
         if ($start !== '' && is_valid_date_ymd($start)) {
-            $sql .= ' AND lr.start_date >= ?';
+            $sql .= ' AND lr.end_date >= ?';
             $params[] = $start;
             $types .= 's';
         }
         if ($end !== '' && is_valid_date_ymd($end)) {
-            $sql .= ' AND lr.end_date <= ?';
+            $sql .= ' AND lr.start_date <= ?';
             $params[] = $end;
             $types .= 's';
         }
@@ -1403,10 +2811,8 @@ switch ($action) {
 
     case 'saveLeaveRequest':
         require_login();
-        $viewerMode = is_viewer_role();
-        if (!$viewerMode) {
-            require_admin();
-        }
+        $leaveFullAccess = has_leave_form_full_access($mysqli);
+        $viewerMode = !$leaveFullAccess;
         if (!ensure_leave_requests_table($mysqli)) {
             respond(['success' => false, 'message' => 'Leave request table is not ready.']);
         }
@@ -1423,7 +2829,7 @@ switch ($action) {
 
         if ($viewerMode) {
             if ($id > 0) {
-                respond(['success' => false, 'message' => 'Only admin can edit leave requests.']);
+                respond(['success' => false, 'message' => 'Only admin/HR/IT/Manager can edit leave requests.']);
             }
             $viewerEmpId = get_logged_in_employee_id($mysqli);
             if ($viewerEmpId === '') {
@@ -1470,14 +2876,7 @@ switch ($action) {
             respond(['success' => false, 'message' => 'Remarks cannot exceed 500 characters.']);
         }
 
-        $empStmt = $mysqli->prepare('SELECT COUNT(*) FROM employees WHERE id = ?');
-        $empStmt->bind_param('s', $empId);
-        $empStmt->execute();
-        $empStmt->bind_result($empExists);
-        $empExists = 0;
-        $empStmt->fetch();
-        $empStmt->close();
-        if ($empExists < 1) {
+        if (!employee_is_active($mysqli, $empId)) {
             respond(['success' => false, 'message' => 'Employee not found.']);
         }
 
@@ -1507,7 +2906,10 @@ switch ($action) {
         break;
 
     case 'deleteLeaveRequest':
-        require_admin();
+        require_login();
+        if (!has_leave_form_full_access($mysqli)) {
+            respond(['success' => false, 'message' => 'Only admin/HR/IT/Manager can delete leave requests.']);
+        }
         if (!ensure_leave_requests_table($mysqli)) {
             respond(['success' => false, 'message' => 'Leave request table is not ready.']);
         }
@@ -1652,14 +3054,7 @@ switch ($action) {
             respond(['success' => false, 'message' => 'Notes cannot exceed 700 characters.']);
         }
 
-        $empStmt = $mysqli->prepare('SELECT COUNT(*) FROM employees WHERE id = ?');
-        $empStmt->bind_param('s', $empId);
-        $empStmt->execute();
-        $empStmt->bind_result($empExists);
-        $empExists = 0;
-        $empStmt->fetch();
-        $empStmt->close();
-        if ($empExists < 1) {
+        if (!employee_is_active($mysqli, $empId)) {
             respond(['success' => false, 'message' => 'Employee not found.']);
         }
 
@@ -1732,6 +3127,9 @@ switch ($action) {
         $empDesignation = sanitize($_POST['empDesignation'] ?? '');
         $employeePassword = (string)($_POST['employeePassword'] ?? '');
         $timestamp = parse_datetime_input($_POST['timestamp'] ?? '');
+        $gpsLatitude = parse_gps_coordinate($_POST['gpsLatitude'] ?? null, -90, 90);
+        $gpsLongitude = parse_gps_coordinate($_POST['gpsLongitude'] ?? null, -180, 180);
+        $gpsAccuracy = parse_gps_accuracy($_POST['gpsAccuracy'] ?? null);
         if (!verify_employee_punch_profile($mysqli, $empId, $empName, $empDepartment, $empDesignation)) {
             respond(['success' => false, 'message' => 'Employee details do not match. Please select employee again.']);
         }
@@ -1741,7 +3139,7 @@ switch ($action) {
         if (!verify_employee_password($mysqli, $empId, $employeePassword)) {
             respond(['success' => false, 'message' => 'Invalid employee ID or password.']);
         }
-        register_employee_punch($mysqli, $empId, $timestamp, '', '', false);
+        register_employee_punch($mysqli, $empId, $timestamp, '', '', false, $gpsLatitude, $gpsLongitude, $gpsAccuracy);
         break;
 
         require_admin();
@@ -1754,6 +3152,9 @@ switch ($action) {
         $timestamp = parse_datetime_input($_POST['timestamp'] ?? '');
         $vehicleName = sanitize($_POST['vehicleName'] ?? '');
         $vehiclePurpose = sanitize($_POST['vehiclePurpose'] ?? '');
+        $gpsLatitude = parse_gps_coordinate($_POST['gpsLatitude'] ?? null, -90, 90);
+        $gpsLongitude = parse_gps_coordinate($_POST['gpsLongitude'] ?? null, -180, 180);
+        $gpsAccuracy = parse_gps_accuracy($_POST['gpsAccuracy'] ?? null);
         if (!verify_employee_punch_profile($mysqli, $empId, $empName, $empDepartment, $empDesignation)) {
             respond(['success' => false, 'message' => 'Employee details do not match. Please select employee again.']);
         }
@@ -1763,7 +3164,7 @@ switch ($action) {
         if (!verify_employee_password($mysqli, $empId, $employeePassword)) {
             respond(['success' => false, 'message' => 'Invalid employee ID or password.']);
         }
-        register_employee_punch($mysqli, $empId, $timestamp, $vehicleName, $vehiclePurpose, true);
+        register_employee_punch($mysqli, $empId, $timestamp, $vehicleName, $vehiclePurpose, true, $gpsLatitude, $gpsLongitude, $gpsAccuracy);
         break;
 
     case 'attendanceRecords':
@@ -1782,257 +3183,8 @@ switch ($action) {
         if ($empIdFilter !== 'All' && !validate_employee_id($empIdFilter)) {
             respond(['success' => false, 'message' => 'Invalid employee filter.']);
         }
-        $params = [$start, $end . ' 23:59:59'];
-        $query = 'SELECT p.emp_id, p.timestamp, e.name, e.department FROM attendance_punches p JOIN employees e ON p.emp_id = e.id WHERE p.timestamp BETWEEN ? AND ?';
-        if ($department !== 'All') {
-            $query .= ' AND e.department = ?';
-            $params[] = $department;
-        }
-        if ($empIdFilter !== 'All') {
-            $query .= ' AND e.id = ?';
-            $params[] = $empIdFilter;
-        }
-        $query .= ' ORDER BY p.emp_id, p.timestamp';
-
-        $stmt = $mysqli->prepare($query);
-        if ($department !== 'All' && $empIdFilter !== 'All') {
-            $stmt->bind_param('ssss', $params[0], $params[1], $params[2], $params[3]);
-        } elseif ($department !== 'All' || $empIdFilter !== 'All') {
-            $stmt->bind_param('sss', $params[0], $params[1], $params[2]);
-        } else {
-            $stmt->bind_param('ss', $params[0], $params[1]);
-        }
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $punches = $result->fetch_all(MYSQLI_ASSOC);
-
-        $holidayResult = $mysqli->query('SELECT `date`, description FROM holidays');
-        $holidayMap = [];
-        while ($row = $holidayResult->fetch_assoc()) {
-            $holidayMap[$row['date']] = $row['description'];
-        }
-
-        $employeeQuery = 'SELECT id, name, department FROM employees';
-        $employeeParams = [];
-        $employeeWhere = [];
-        if ($department !== 'All') {
-            $employeeWhere[] = 'department = ?';
-            $employeeParams[] = $department;
-        }
-        if ($empIdFilter !== 'All') {
-            $employeeWhere[] = 'id = ?';
-            $employeeParams[] = $empIdFilter;
-        }
-        if ($employeeWhere) {
-            $employeeQuery .= ' WHERE ' . implode(' AND ', $employeeWhere);
-        }
-        $employeeQuery .= ' ORDER BY id';
-        $employeeStmt = $mysqli->prepare($employeeQuery);
-        if (count($employeeParams) === 2) {
-            $employeeStmt->bind_param('ss', $employeeParams[0], $employeeParams[1]);
-        } elseif (count($employeeParams) === 1) {
-            $employeeStmt->bind_param('s', $employeeParams[0]);
-        }
-        $employeeStmt->execute();
-        $employeesForRange = $employeeStmt->get_result()->fetch_all(MYSQLI_ASSOC);
-
-        $records = [];
-        foreach ($punches as $punch) {
-            $dateKey = substr($punch['timestamp'], 0, 10);
-            $key = $punch['emp_id'] . '_' . $dateKey;
-            $records[$key]['empId'] = $punch['emp_id'];
-            $records[$key]['name'] = $punch['name'];
-            $records[$key]['department'] = $punch['department'];
-            $records[$key]['date'] = $dateKey;
-            $records[$key]['timestamps'][] = $punch['timestamp'];
-        }
-
-        if (ensure_vehicle_punches_table($mysqli)) {
-            $vehicleParams = [$start, $end . ' 23:59:59'];
-            $vehicleQuery = 'SELECT v.emp_id, v.timestamp, v.vehicle_name, v.vehicle_purpose, e.name, e.department FROM vehicle_punches v JOIN employees e ON v.emp_id = e.id WHERE v.timestamp BETWEEN ? AND ?';
-            if ($department !== 'All') {
-                $vehicleQuery .= ' AND e.department = ?';
-                $vehicleParams[] = $department;
-            }
-            if ($empIdFilter !== 'All') {
-                $vehicleQuery .= ' AND e.id = ?';
-                $vehicleParams[] = $empIdFilter;
-            }
-            $vehicleQuery .= ' ORDER BY v.emp_id, v.timestamp';
-
-            $vehicleStmt = $mysqli->prepare($vehicleQuery);
-            if ($department !== 'All' && $empIdFilter !== 'All') {
-                $vehicleStmt->bind_param('ssss', $vehicleParams[0], $vehicleParams[1], $vehicleParams[2], $vehicleParams[3]);
-            } elseif ($department !== 'All' || $empIdFilter !== 'All') {
-                $vehicleStmt->bind_param('sss', $vehicleParams[0], $vehicleParams[1], $vehicleParams[2]);
-            } else {
-                $vehicleStmt->bind_param('ss', $vehicleParams[0], $vehicleParams[1]);
-            }
-            $vehicleStmt->execute();
-            $vehicleRows = $vehicleStmt->get_result()->fetch_all(MYSQLI_ASSOC);
-
-            foreach ($vehicleRows as $vehicleRow) {
-                $dateKey = substr($vehicleRow['timestamp'], 0, 10);
-                $key = $vehicleRow['emp_id'] . '_' . $dateKey;
-                if (!isset($records[$key])) {
-                    $records[$key]['empId'] = $vehicleRow['emp_id'];
-                    $records[$key]['name'] = $vehicleRow['name'];
-                    $records[$key]['department'] = $vehicleRow['department'];
-                    $records[$key]['date'] = $dateKey;
-                    $records[$key]['timestamps'] = [];
-                }
-                $records[$key]['vehicleEntries'][] = trim(($vehicleRow['vehicle_name'] ?? '') . ' - ' . ($vehicleRow['vehicle_purpose'] ?? ''), ' -');
-                $records[$key]['vehicleName'] = $vehicleRow['vehicle_name'] ?? '';
-                $records[$key]['vehiclePurpose'] = $vehicleRow['vehicle_purpose'] ?? '';
-            }
-        }
-
-        $startDate = new DateTime($start);
-        $endDate = new DateTime($end);
-        foreach ($employeesForRange as $employeeRow) {
-            $cursor = clone $startDate;
-            while ($cursor <= $endDate) {
-                $dateKey = $cursor->format('Y-m-d');
-                $key = $employeeRow['id'] . '_' . $dateKey;
-                if (!isset($records[$key])) {
-                    $records[$key] = [
-                        'empId' => $employeeRow['id'],
-                        'name' => $employeeRow['name'],
-                        'department' => $employeeRow['department'],
-                        'date' => $dateKey,
-                        'timestamps' => [],
-                    ];
-                }
-                $cursor->modify('+1 day');
-            }
-        }
-
-        usort($records, static function ($left, $right) {
-            $cmpEmp = strcmp((string)($left['empId'] ?? ''), (string)($right['empId'] ?? ''));
-            if ($cmpEmp !== 0) {
-                return $cmpEmp;
-            }
-            return strcmp((string)($left['date'] ?? ''), (string)($right['date'] ?? ''));
-        });
-
-        $output = [];
-        $summaryByEmployee = [];
-        foreach ($records as $record) {
-            $sessionData = build_session_details($record['timestamps']);
-            $totalSeconds = $sessionData['totalSeconds'];
-            $totalHours = $totalSeconds / 3600;
-            $dayOfWeek = date('w', strtotime($record['date']));
-            $isHoliday = isset($holidayMap[$record['date']]);
-            $isSpecial = $dayOfWeek == 6 || $isHoliday;
-            $dayType = $isHoliday ? 'Holiday (' . $holidayMap[$record['date']] . ')' : ($dayOfWeek == 6 ? 'Saturday Weekend' : 'Weekday');
-            $hasAttendance = !empty($record['timestamps']);
-            $regularHours = 0;
-            $otHours = 0;
-            if ($isSpecial) {
-                $otHours = $totalHours;
-            } else {
-                $regularHours = min(8, $totalHours);
-                $otHours = max(0, $totalHours - 8);
-            }
-
-            $leaveType = '-';
-            $leaveDays = 0.0;
-            if (!$isSpecial) {
-                if ($hasAttendance) {
-                    if ((int)($sessionData['sessionCount'] ?? 0) === 1 && $totalHours < 8) {
-                        $leaveType = 'Half Leave';
-                        $leaveDays = 0.5;
-                    } else {
-                        $leaveType = 'Present';
-                    }
-                } else {
-                    $leaveType = 'Full Leave';
-                    $leaveDays = 1.0;
-                }
-            }
-
-            $sessionText = $sessionData['sessionText'];
-            if (!$hasAttendance) {
-                $sessionText = $isSpecial ? 'No attendance' : 'Leave';
-            }
-            $vehicleEntries = array_values(array_unique($record['vehicleEntries'] ?? []));
-
-            $empId = $record['empId'];
-            if (!isset($summaryByEmployee[$empId])) {
-                $summaryByEmployee[$empId] = [
-                    'empId' => $record['empId'],
-                    'name' => $record['name'],
-                    'department' => $record['department'],
-                    'totalDays' => 0,
-                    'weekendDays' => 0,
-                    'holidayDays' => 0,
-                    'presentDays' => 0,
-                    'regularHours' => 0.0,
-                    'otHours' => 0.0,
-                    'totalHours' => 0.0,
-                    'leaveDays' => 0.0,
-                    'halfLeaveDays' => 0.0,
-                    'fullLeaveDays' => 0.0,
-                ];
-            }
-            $summaryByEmployee[$empId]['totalDays'] += 1;
-            if ($dayOfWeek == 6) {
-                $summaryByEmployee[$empId]['weekendDays'] += 1;
-            }
-            if ($isHoliday) {
-                $summaryByEmployee[$empId]['holidayDays'] += 1;
-            }
-            if (!$isSpecial && $leaveType === 'Present') {
-                $summaryByEmployee[$empId]['presentDays'] += 1;
-            }
-            $summaryByEmployee[$empId]['regularHours'] += $regularHours;
-            $summaryByEmployee[$empId]['otHours'] += $otHours;
-            $summaryByEmployee[$empId]['totalHours'] += $totalHours;
-            $summaryByEmployee[$empId]['leaveDays'] += $leaveDays;
-            if ($leaveType === 'Half Leave') {
-                $summaryByEmployee[$empId]['halfLeaveDays'] += 0.5;
-            } elseif ($leaveType === 'Full Leave') {
-                $summaryByEmployee[$empId]['fullLeaveDays'] += 1.0;
-            }
-
-            $output[] = [
-                'empId' => $record['empId'],
-                'name' => $record['name'],
-                'department' => $record['department'],
-                'date' => $record['date'],
-                'dayType' => $dayType,
-                'sessionCount' => $sessionData['sessionCount'],
-                'sessionText' => $sessionText,
-                'rawTimes' => implode(', ', array_map(static fn($ts) => substr($ts, 11), $record['timestamps'])),
-                'vehicleName' => $record['vehicleName'] ?? '',
-                'vehiclePurpose' => $record['vehiclePurpose'] ?? '',
-                'vehicleText' => $vehicleEntries ? implode(' | ', $vehicleEntries) : 'No vehicle used',
-                'regularHours' => round($regularHours, 2),
-                'otHours' => round($otHours, 2),
-                'totalHours' => round($totalHours, 2),
-                'leaveType' => $leaveType,
-                'leaveDays' => round($leaveDays, 2),
-                'isSpecial' => $isSpecial,
-            ];
-        }
-
-        $summaryList = [];
-        foreach ($summaryByEmployee as $summary) {
-            $summaryList[] = [
-                'empId' => $summary['empId'],
-                'name' => $summary['name'],
-                'department' => $summary['department'],
-                'regularHours' => round($summary['regularHours'], 2),
-                'otHours' => round($summary['otHours'], 2),
-                'totalHours' => round($summary['totalHours'], 2),
-                'leaveDays' => round($summary['leaveDays'], 2),
-                'halfLeaveDays' => round($summary['halfLeaveDays'], 2),
-                'fullLeaveDays' => round($summary['fullLeaveDays'], 2),
-            ];
-        }
-        usort($summaryList, static fn($a, $b) => strcmp($a['empId'], $b['empId']));
-
-        respond(['success' => true, 'records' => array_values($output), 'summary' => $summaryList]);
+        $dataset = build_attendance_dataset($mysqli, $start, $end, $department, $empIdFilter, has_full_access_role($_SESSION['role'] ?? ''));
+        respond(['success' => true, 'records' => $dataset['records'], 'summary' => $dataset['summary']]);
         break;
 
     case 'deleteAttendanceDay':
@@ -2061,6 +3213,7 @@ switch ($action) {
             $vehicleStmt->bind_param('sss', $empId, $dayStart, $dayEnd);
             $vehicleStmt->execute();
         }
+        sync_attendance_daily_summary_for_day($mysqli, $empId, $date);
         respond(['success' => true, 'message' => 'Attendance deleted successfully.']);
         break;
 
@@ -2128,6 +3281,7 @@ switch ($action) {
         }
 
         $mysqli->commit();
+    sync_attendance_daily_summary_for_day($mysqli, $empId, $date);
         respond(['success' => true, 'message' => 'Attendance updated successfully.']);
         break;
 
@@ -2147,221 +3301,29 @@ switch ($action) {
         if ($empIdFilter !== 'All' && !validate_employee_id($empIdFilter)) {
             respond(['success' => false, 'message' => 'Invalid employee filter.']);
         }
-        $params = [$start, $end . ' 23:59:59'];
-        $query = 'SELECT p.emp_id, p.timestamp, e.name, e.department FROM attendance_punches p JOIN employees e ON p.emp_id = e.id WHERE p.timestamp BETWEEN ? AND ?';
-        if ($department !== 'All') {
-            $query .= ' AND e.department = ?';
-            $params[] = $department;
-        }
-        if ($empIdFilter !== 'All') {
-            $query .= ' AND e.id = ?';
-            $params[] = $empIdFilter;
-        }
-        $query .= ' ORDER BY p.emp_id, p.timestamp';
-        $stmt = $mysqli->prepare($query);
-        if ($department !== 'All' && $empIdFilter !== 'All') {
-            $stmt->bind_param('ssss', $params[0], $params[1], $params[2], $params[3]);
-        } elseif ($department !== 'All' || $empIdFilter !== 'All') {
-            $stmt->bind_param('sss', $params[0], $params[1], $params[2]);
-        } else {
-            $stmt->bind_param('ss', $params[0], $params[1]);
-        }
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $punches = $result->fetch_all(MYSQLI_ASSOC);
-
-        $holidayResult = $mysqli->query('SELECT `date`, description FROM holidays');
-        $holidayMap = [];
-        while ($row = $holidayResult->fetch_assoc()) {
-            $holidayMap[$row['date']] = $row['description'];
-        }
-
-        $employeeQuery = 'SELECT id, name, department FROM employees';
-        $employeeParams = [];
-        $employeeWhere = [];
-        if ($department !== 'All') {
-            $employeeWhere[] = 'department = ?';
-            $employeeParams[] = $department;
-        }
-        if ($empIdFilter !== 'All') {
-            $employeeWhere[] = 'id = ?';
-            $employeeParams[] = $empIdFilter;
-        }
-        if ($employeeWhere) {
-            $employeeQuery .= ' WHERE ' . implode(' AND ', $employeeWhere);
-        }
-        $employeeQuery .= ' ORDER BY id';
-        $employeeStmt = $mysqli->prepare($employeeQuery);
-        if (count($employeeParams) === 2) {
-            $employeeStmt->bind_param('ss', $employeeParams[0], $employeeParams[1]);
-        } elseif (count($employeeParams) === 1) {
-            $employeeStmt->bind_param('s', $employeeParams[0]);
-        }
-        $employeeStmt->execute();
-        $employeesForRange = $employeeStmt->get_result()->fetch_all(MYSQLI_ASSOC);
-
-        $grouped = [];
-        foreach ($punches as $punch) {
-            $dateKey = substr($punch['timestamp'], 0, 10);
-            $key = $punch['emp_id'] . '_' . $dateKey;
-            $grouped[$key]['empId'] = $punch['emp_id'];
-            $grouped[$key]['name'] = $punch['name'];
-            $grouped[$key]['department'] = $punch['department'];
-            $grouped[$key]['date'] = $dateKey;
-            $grouped[$key]['timestamps'][] = $punch['timestamp'];
-        }
-
-        if (ensure_vehicle_punches_table($mysqli)) {
-            $vehicleParams = [$start, $end . ' 23:59:59'];
-            $vehicleQuery = 'SELECT v.emp_id, v.timestamp, v.vehicle_name, v.vehicle_purpose, e.name, e.department FROM vehicle_punches v JOIN employees e ON v.emp_id = e.id WHERE v.timestamp BETWEEN ? AND ?';
-            if ($department !== 'All') {
-                $vehicleQuery .= ' AND e.department = ?';
-                $vehicleParams[] = $department;
-            }
-            if ($empIdFilter !== 'All') {
-                $vehicleQuery .= ' AND e.id = ?';
-                $vehicleParams[] = $empIdFilter;
-            }
-            $vehicleQuery .= ' ORDER BY v.emp_id, v.timestamp';
-
-            $vehicleStmt = $mysqli->prepare($vehicleQuery);
-            if ($department !== 'All' && $empIdFilter !== 'All') {
-                $vehicleStmt->bind_param('ssss', $vehicleParams[0], $vehicleParams[1], $vehicleParams[2], $vehicleParams[3]);
-            } elseif ($department !== 'All' || $empIdFilter !== 'All') {
-                $vehicleStmt->bind_param('sss', $vehicleParams[0], $vehicleParams[1], $vehicleParams[2]);
-            } else {
-                $vehicleStmt->bind_param('ss', $vehicleParams[0], $vehicleParams[1]);
-            }
-            $vehicleStmt->execute();
-            $vehicleRows = $vehicleStmt->get_result()->fetch_all(MYSQLI_ASSOC);
-
-            foreach ($vehicleRows as $vehicleRow) {
-                $dateKey = substr($vehicleRow['timestamp'], 0, 10);
-                $key = $vehicleRow['emp_id'] . '_' . $dateKey;
-                if (!isset($grouped[$key])) {
-                    $grouped[$key]['empId'] = $vehicleRow['emp_id'];
-                    $grouped[$key]['name'] = $vehicleRow['name'];
-                    $grouped[$key]['department'] = $vehicleRow['department'];
-                    $grouped[$key]['date'] = $dateKey;
-                    $grouped[$key]['timestamps'] = [];
-                }
-                $grouped[$key]['vehicleEntries'][] = trim(($vehicleRow['vehicle_name'] ?? '') . ' - ' . ($vehicleRow['vehicle_purpose'] ?? ''), ' -');
-            }
-        }
-
-        $startDate = new DateTime($start);
-        $endDate = new DateTime($end);
-        foreach ($employeesForRange as $employeeRow) {
-            $cursor = clone $startDate;
-            while ($cursor <= $endDate) {
-                $dateKey = $cursor->format('Y-m-d');
-                $key = $employeeRow['id'] . '_' . $dateKey;
-                if (!isset($grouped[$key])) {
-                    $grouped[$key] = [
-                        'empId' => $employeeRow['id'],
-                        'name' => $employeeRow['name'],
-                        'department' => $employeeRow['department'],
-                        'date' => $dateKey,
-                        'timestamps' => [],
-                    ];
-                }
-                $cursor->modify('+1 day');
-            }
-        }
-
-        usort($grouped, static function ($left, $right) {
-            $cmpEmp = strcmp((string)($left['empId'] ?? ''), (string)($right['empId'] ?? ''));
-            if ($cmpEmp !== 0) {
-                return $cmpEmp;
-            }
-            return strcmp((string)($left['date'] ?? ''), (string)($right['date'] ?? ''));
-        });
-
+        $dataset = build_attendance_dataset($mysqli, $start, $end, $department, $empIdFilter, false);
         $rows = [];
         $rows[] = ['Employee ID', 'Name', 'Department', 'Date', 'Day Type', 'Session Time', 'Leave Type', 'Leave Days', 'Office Vehicle Used', 'Regular Hours', 'Overtime Hours', 'Total Hours'];
-        $summaryByEmployee = [];
-        foreach ($grouped as $record) {
-            $sessionData = build_session_details($record['timestamps']);
-            $totalSeconds = $sessionData['totalSeconds'];
-            $totalHours = $totalSeconds / 3600;
-            $dayOfWeek = date('w', strtotime($record['date']));
-            $isHoliday = isset($holidayMap[$record['date']]);
-            $isSpecial = $dayOfWeek == 6 || $isHoliday;
-            $dayType = $isHoliday ? 'Holiday (' . $holidayMap[$record['date']] . ')' : ($dayOfWeek == 6 ? 'Saturday Weekend' : 'Weekday');
-            $hasAttendance = !empty($record['timestamps']);
-            $regularHours = 0;
-            $otHours = 0;
-            if ($isSpecial) {
-                $otHours = $totalHours;
-            } else {
-                $regularHours = min(8, $totalHours);
-                $otHours = max(0, $totalHours - 8);
-            }
-            $leaveType = '-';
-            $leaveDays = 0.0;
-            if (!$isSpecial) {
-                if ($hasAttendance) {
-                    if ((int)($sessionData['sessionCount'] ?? 0) === 1 && $totalHours < 8) {
-                        $leaveType = 'Half Leave';
-                        $leaveDays = 0.5;
-                    } else {
-                        $leaveType = 'Present';
-                    }
-                } else {
-                    $leaveType = 'Full Leave';
-                    $leaveDays = 1.0;
-                }
-            }
-            $sessionText = $sessionData['sessionText'];
-            if (!$hasAttendance) {
-                $sessionText = $isSpecial ? 'No attendance' : 'Leave';
-            }
-            $vehicleEntries = array_values(array_unique($record['vehicleEntries'] ?? []));
-
-            $empId = $record['empId'];
-            if (!isset($summaryByEmployee[$empId])) {
-                $summaryByEmployee[$empId] = [
-                    'empId' => $record['empId'],
-                    'name' => $record['name'],
-                    'department' => $record['department'],
-                    'totalDays' => 0,
-                    'weekendDays' => 0,
-                    'holidayDays' => 0,
-                    'presentDays' => 0,
-                    'regularHours' => 0.0,
-                    'otHours' => 0.0,
-                    'totalHours' => 0.0,
-                    'leaveDays' => 0.0,
-                    'halfLeaveDays' => 0.0,
-                    'fullLeaveDays' => 0.0,
-                ];
-            }
-            $summaryByEmployee[$empId]['totalDays'] += 1;
-            if ($dayOfWeek == 6) {
-                $summaryByEmployee[$empId]['weekendDays'] += 1;
-            }
-            if ($isHoliday) {
-                $summaryByEmployee[$empId]['holidayDays'] += 1;
-            }
-            if (!$isSpecial && $leaveType === 'Present') {
-                $summaryByEmployee[$empId]['presentDays'] += 1;
-            }
-            $summaryByEmployee[$empId]['regularHours'] += $regularHours;
-            $summaryByEmployee[$empId]['otHours'] += $otHours;
-            $summaryByEmployee[$empId]['totalHours'] += $totalHours;
-            $summaryByEmployee[$empId]['leaveDays'] += $leaveDays;
-            if ($leaveType === 'Half Leave') {
-                $summaryByEmployee[$empId]['halfLeaveDays'] += 0.5;
-            } elseif ($leaveType === 'Full Leave') {
-                $summaryByEmployee[$empId]['fullLeaveDays'] += 1.0;
-            }
-
-            $rows[] = [$record['empId'], $record['name'], $record['department'], $record['date'], $dayType, $sessionText, $leaveType, number_format($leaveDays, 2), $vehicleEntries ? implode(' | ', $vehicleEntries) : 'No vehicle used', number_format($regularHours, 2), number_format($otHours, 2), number_format($totalHours, 2)];
+        foreach ($dataset['records'] as $record) {
+            $rows[] = [
+                $record['empId'],
+                $record['name'],
+                $record['department'],
+                $record['date'],
+                $record['dayType'],
+                $record['sessionText'],
+                $record['leaveType'],
+                number_format((float)$record['leaveDays'], 2),
+                $record['vehicleText'],
+                number_format((float)$record['regularHours'], 2),
+                number_format((float)$record['otHours'], 2),
+                number_format((float)$record['totalHours'], 2),
+            ];
         }
 
         $summaryRows = [];
         $summaryRows[] = ['Employee ID', 'Name', 'Department', 'Total Days', 'Weekend Days', 'Public Holiday Days', 'Present Days', 'Leave Days', 'Half Leave / Full Leave', 'Regular Hours', 'OT Hours', 'Worked Hours'];
-        foreach ($summaryByEmployee as $summary) {
+        foreach ($dataset['summary'] as $summary) {
             $summaryRows[] = [
                 $summary['empId'],
                 $summary['name'],
@@ -2395,86 +3357,7 @@ switch ($action) {
             }
             $department = 'All';
         }
-
-        if (!ensure_vehicle_punches_table($mysqli)) {
-            respond(['success' => true, 'records' => []]);
-        }
-
-        $params = [$start, $end . ' 23:59:59'];
-        $query = 'SELECT v.emp_id, e.name, e.department, v.timestamp, v.vehicle_name, v.vehicle_purpose, v.session_token, v.session_type FROM vehicle_punches v JOIN employees e ON v.emp_id = e.id WHERE v.timestamp BETWEEN ? AND ?';
-        if ($department !== 'All') {
-            $query .= ' AND e.department = ?';
-            $params[] = $department;
-        }
-        if ($viewerEmpId !== '') {
-            $query .= ' AND e.id = ?';
-            $params[] = $viewerEmpId;
-        }
-        $query .= ' ORDER BY v.timestamp DESC, v.emp_id ASC';
-
-        $stmt = $mysqli->prepare($query);
-        if ($department !== 'All' && $viewerEmpId !== '') {
-            $stmt->bind_param('ssss', $params[0], $params[1], $params[2], $params[3]);
-        } elseif ($department !== 'All' || $viewerEmpId !== '') {
-            $stmt->bind_param('sss', $params[0], $params[1], $params[2]);
-        } else {
-            $stmt->bind_param('ss', $params[0], $params[1]);
-        }
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $rows = $result->fetch_all(MYSQLI_ASSOC);
-
-        $sessionMap = [];
-        foreach ($rows as $row) {
-            $token = $row['session_token'];
-            if (!isset($sessionMap[$token])) {
-                $sessionMap[$token] = [
-                    'empId' => $row['emp_id'],
-                    'name' => $row['name'],
-                    'department' => $row['department'],
-                    'sessionToken' => $token,
-                    'vehicleName' => $row['vehicle_name'],
-                    'vehiclePurpose' => $row['vehicle_purpose'],
-                    'startTimestamp' => null,
-                    'endTimestamp' => null,
-                    'status' => 'In progress',
-                ];
-            }
-            if (($row['session_type'] ?? '') === 'start') {
-                $sessionMap[$token]['startTimestamp'] = $row['timestamp'];
-            } elseif (($row['session_type'] ?? '') === 'end') {
-                $sessionMap[$token]['endTimestamp'] = $row['timestamp'];
-            }
-        }
-
-        $records = [];
-        foreach ($sessionMap as $session) {
-            if (!$session['startTimestamp']) {
-                continue;
-            }
-            [$durationMinutes, $durationText] = vehicle_session_duration_parts($session['startTimestamp'], $session['endTimestamp'] ?? '');
-            $records[] = [
-                'empId' => $session['empId'],
-                'name' => $session['name'],
-                'department' => $session['department'],
-                'sessionToken' => $session['sessionToken'],
-                'date' => substr($session['startTimestamp'], 0, 10),
-                'startTime' => substr($session['startTimestamp'], 11),
-                'endTime' => $session['endTimestamp'] ? substr($session['endTimestamp'], 11) : '',
-                'startTimestamp' => $session['startTimestamp'],
-                'endTimestamp' => $session['endTimestamp'] ?? '',
-                'vehicleName' => $session['vehicleName'],
-                'vehiclePurpose' => $session['vehiclePurpose'],
-                'status' => $session['endTimestamp'] ? 'Completed' : 'In progress',
-                'durationMinutes' => $durationMinutes,
-                'durationText' => $durationText,
-            ];
-        }
-
-        usort($records, static function ($left, $right) {
-            return strcmp($right['date'] . ' ' . $right['startTime'], $left['date'] . ' ' . $left['startTime']);
-        });
-
+        $records = build_vehicle_usage_dataset($mysqli, $start, $end, $department, $viewerEmpId);
         respond(['success' => true, 'records' => $records]);
         break;
 
@@ -2510,14 +3393,7 @@ switch ($action) {
             respond(['success' => false, 'message' => 'Vehicle session storage is not ready.']);
         }
 
-        $empCheck = $mysqli->prepare('SELECT COUNT(*) FROM employees WHERE id = ?');
-        $empCheck->bind_param('s', $empId);
-        $empCheck->execute();
-        $empCheck->bind_result($empExists);
-        $empExists = 0;
-        $empCheck->fetch();
-        $empCheck->close();
-        if (!$empExists) {
+        if (!employee_is_active($mysqli, $empId)) {
             respond(['success' => false, 'message' => 'Employee not found.']);
         }
 
@@ -2604,75 +3480,20 @@ switch ($action) {
             }
             $department = 'All';
         }
-
-        if (!ensure_vehicle_punches_table($mysqli)) {
-            $rows = [['Employee ID', 'Name', 'Department', 'Date', 'From Time', 'To Time', 'Duration', 'Vehicle Number', 'Purpose', 'Status']];
-            $xlsx = xlsx_build_package('Vehicle Usage', $rows);
-            output_xlsx_download('vehicle_usage_report_' . $start . '_to_' . $end . '.xlsx', $xlsx);
-        }
-
-        $params = [$start, $end . ' 23:59:59'];
-        $query = 'SELECT v.emp_id, e.name, e.department, v.timestamp, v.vehicle_name, v.vehicle_purpose, v.session_token, v.session_type FROM vehicle_punches v JOIN employees e ON v.emp_id = e.id WHERE v.timestamp BETWEEN ? AND ?';
-        if ($department !== 'All') {
-            $query .= ' AND e.department = ?';
-            $params[] = $department;
-        }
-        if ($viewerEmpId !== '') {
-            $query .= ' AND e.id = ?';
-            $params[] = $viewerEmpId;
-        }
-        $query .= ' ORDER BY v.timestamp DESC, v.emp_id ASC';
-
-        $stmt = $mysqli->prepare($query);
-        if ($department !== 'All' && $viewerEmpId !== '') {
-            $stmt->bind_param('ssss', $params[0], $params[1], $params[2], $params[3]);
-        } elseif ($department !== 'All' || $viewerEmpId !== '') {
-            $stmt->bind_param('sss', $params[0], $params[1], $params[2]);
-        } else {
-            $stmt->bind_param('ss', $params[0], $params[1]);
-        }
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $data = $result->fetch_all(MYSQLI_ASSOC);
-
-        $sessionMap = [];
-        foreach ($data as $row) {
-            $token = $row['session_token'];
-            if (!isset($sessionMap[$token])) {
-                $sessionMap[$token] = [
-                    'empId' => $row['emp_id'],
-                    'name' => $row['name'],
-                    'department' => $row['department'],
-                    'vehicleName' => $row['vehicle_name'],
-                    'vehiclePurpose' => $row['vehicle_purpose'],
-                    'startTime' => null,
-                    'endTime' => null,
-                ];
-            }
-            if (($row['session_type'] ?? '') === 'start') {
-                $sessionMap[$token]['startTime'] = $row['timestamp'];
-            } elseif (($row['session_type'] ?? '') === 'end') {
-                $sessionMap[$token]['endTime'] = $row['timestamp'];
-            }
-        }
-
+        $records = build_vehicle_usage_dataset($mysqli, $start, $end, $department, $viewerEmpId);
         $rows = [['Employee ID', 'Name', 'Department', 'Date', 'From Time', 'To Time', 'Duration', 'Vehicle Number', 'Purpose', 'Status']];
-        foreach ($sessionMap as $session) {
-            if (!$session['startTime']) {
-                continue;
-            }
-            [$durationMinutes, $durationText] = vehicle_session_duration_parts($session['startTime'], $session['endTime'] ?? '');
+        foreach ($records as $record) {
             $rows[] = [
-                $session['empId'],
-                $session['name'],
-                $session['department'],
-                substr($session['startTime'], 0, 10),
-                substr($session['startTime'], 11),
-                $session['endTime'] ? substr($session['endTime'], 11) : '',
-                $durationText,
-                $session['vehicleName'],
-                $session['vehiclePurpose'],
-                $session['endTime'] ? 'Completed' : 'In progress',
+                $record['empId'],
+                $record['name'],
+                $record['department'],
+                $record['date'],
+                $record['startTime'],
+                $record['endTime'],
+                $record['durationText'],
+                $record['vehicleName'],
+                $record['vehiclePurpose'],
+                $record['status'],
             ];
         }
 
@@ -2750,12 +3571,14 @@ switch ($action) {
             $hrRaw       = isset($colMap['hr']) ? trim($row[$colMap['hr']] ?? '') : '0';
             $canEdit     = (in_array(strtolower($hrRaw), ['1','yes','y'], true)) ? 1 : 0;
 
+            ensure_employee_deleted_flag($mysqli);
+            ensure_employee_purged_flag($mysqli);
             $chk = $mysqli->prepare('SELECT COUNT(*) FROM employees WHERE id = ?');
             $chk->bind_param('s', $empId); $chk->execute();
             $chk->bind_result($exists); $chk->fetch(); $chk->close();
 
             if ($exists) {
-                $setCols = 'name = ?, ' . ($withDesig ? 'designation = ?, ' : '') . 'department = ?' . ($withHrPerm ? ', can_edit_attendance = ?' : '');
+                $setCols = 'name = ?, ' . ($withDesig ? 'designation = ?, ' : '') . 'department = ?' . ($withHrPerm ? ', can_edit_attendance = ?' : '') . ', is_deleted = 0, is_purged = 0';
                 $sql = "UPDATE employees SET {$setCols} WHERE id = ?";
                 $st = $mysqli->prepare($sql);
                 if ($withDesig && $withHrPerm)   $st->bind_param('sssis', $name, $designation, $department, $canEdit, $empId);

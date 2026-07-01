@@ -2,10 +2,37 @@
 session_start();
 require_once __DIR__ . '/db.php';
 
+const LOGIN_RUNTIME_SCHEMA_VERSION = '2026-07-01-runtime-3';
+
+function login_runtime_schema_is_current(mysqli $mysqli): bool {
+    $metaTable = $mysqli->query("SHOW TABLES LIKE 'app_runtime_metadata'");
+    if (!$metaTable || $metaTable->num_rows === 0) {
+        return false;
+    }
+
+    $stmt = $mysqli->prepare('SELECT meta_value FROM app_runtime_metadata WHERE meta_key = ? LIMIT 1');
+    if (!$stmt) {
+        return false;
+    }
+
+    $key = 'schema_version';
+    $stmt->bind_param('s', $key);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    return (string)($row['meta_value'] ?? '') === LOGIN_RUNTIME_SCHEMA_VERSION;
+}
+
 // Ensure users table exists and auto-create admin if no users exist yet.
 $mysqli = db_connect();
-$check = $mysqli->query("SHOW TABLES LIKE 'users'");
-$tableExists = $check && $check->num_rows > 0;
+$runtimeSchemaCurrent = login_runtime_schema_is_current($mysqli);
+$tableExists = $runtimeSchemaCurrent;
+
+if (!$tableExists) {
+    $check = $mysqli->query("SHOW TABLES LIKE 'users'");
+    $tableExists = $check && $check->num_rows > 0;
+}
 
 if (!$tableExists) {
     $createSql = "CREATE TABLE users (
@@ -16,9 +43,7 @@ if (!$tableExists) {
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
     $tableExists = $mysqli->query($createSql) === true;
-}
-
-if ($tableExists) {
+} elseif (!$runtimeSchemaCurrent) {
     $roleCheck = $mysqli->query("SHOW COLUMNS FROM users LIKE 'role'");
     $roleType = $roleCheck ? (string)($roleCheck->fetch_assoc()['Type'] ?? '') : '';
     if ($roleType && (strpos($roleType, "'hr'") === false || strpos($roleType, "'it'") === false)) {
@@ -26,7 +51,7 @@ if ($tableExists) {
     }
 }
 
-if ($tableExists) {
+if ($tableExists && !$runtimeSchemaCurrent) {
     $cnt = $mysqli->query('SELECT COUNT(*) AS cnt FROM users');
     if ($cnt && (int)($cnt->fetch_assoc()['cnt'] ?? 0) === 0) {
         $defaultHash = password_hash('admin123', PASSWORD_BCRYPT);

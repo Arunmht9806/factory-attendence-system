@@ -108,6 +108,9 @@ if (empty($_SESSION['user_id'])) {
                     <button onclick="switchTab('tab-employees')" id="btn-tab-employees" class="flex-shrink-0 px-4 py-2 text-sm font-semibold rounded-lg transition-all text-slate-600 hover:text-slate-900 hover:bg-slate-100 flex items-center gap-1.5">
                         <i data-lucide="user-cog" class="w-4 h-4"></i> Manage Staff
                     </button>
+                    <button onclick="switchTab('tab-archived-employees')" id="btn-tab-archived-employees" class="flex-shrink-0 px-4 py-2 text-sm font-semibold rounded-lg transition-all text-slate-600 hover:text-slate-900 hover:bg-slate-100 flex items-center gap-1.5">
+                        <i data-lucide="archive" class="w-4 h-4"></i> Archived Staff
+                    </button>
                     <button onclick="switchTab('tab-holidays')" id="btn-tab-holidays" class="flex-shrink-0 px-4 py-2 text-sm font-semibold rounded-lg transition-all text-slate-600 hover:text-slate-900 hover:bg-slate-100 flex items-center gap-1.5">
                         <i data-lucide="plane-takeoff" class="w-4 h-4"></i> Public Holidays
                     </button>
@@ -183,6 +186,7 @@ if (empty($_SESSION['user_id'])) {
                                         <th class="p-4">Day Type</th>
                                         <th class="p-4">Session Time</th>
                                         <th class="p-4">Office Vehicle Used</th>
+                                        <th class="p-4">GPS Tracking</th>
                                         <th class="p-4">Leave Type</th>
                                         <th class="p-4">Leave Days</th>
                                         <th class="p-4">Regular Hours</th>
@@ -261,13 +265,29 @@ if (empty($_SESSION['user_id'])) {
                     </div>
 
                     <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div class="px-6 py-4 border-b border-slate-200 bg-slate-50">
-                            <h3 class="font-bold text-slate-900">Current Staff Register</h3>
+                        <div class="px-6 py-4 border-b border-slate-200 bg-slate-50 flex flex-col gap-3">
+                            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                <h3 class="font-bold text-slate-900">Current Staff Register</h3>
+                                <div class="flex items-center gap-3">
+                                    <span id="employee-selection-count" class="text-xs text-slate-500">0 selected</span>
+                                    <button id="btn-delete-selected-employees" class="px-3 py-2 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-lg text-xs transition disabled:opacity-50 disabled:cursor-not-allowed">
+                                        Delete Selected Staff
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                <input type="search" id="employee-search" placeholder="Search by Staff ID, name, designation, or department" class="w-full sm:max-w-md p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none">
+                                <button id="btn-select-filtered-employees" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg text-xs transition disabled:opacity-50 disabled:cursor-not-allowed">
+                                    Select Filtered
+                                </button>
+                                <span id="employee-match-count" class="text-xs text-slate-500">0 matches</span>
+                            </div>
                         </div>
                         <div class="overflow-x-auto">
                             <table class="w-full text-left border-collapse">
                                 <thead>
                                     <tr class="bg-slate-100 text-slate-700 text-xs uppercase tracking-wider font-semibold border-b border-slate-200">
+                                        <th class="p-4 w-14 text-center"><input type="checkbox" id="employee-select-all" class="rounded border-slate-300 text-blue-600 focus:ring-blue-500/20"></th>
                                         <th class="p-4">Staff ID</th>
                                         <th class="p-4">Full Name</th>
                                         <th class="p-4">Post / Designation</th>
@@ -315,9 +335,25 @@ if (empty($_SESSION['user_id'])) {
                         </form>
 
                         <div class="mt-6 overflow-x-auto rounded-xl border border-slate-200">
+                            <div class="px-4 py-3 border-b border-slate-200 bg-slate-50 flex flex-col gap-3">
+                                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <span id="user-selection-count" class="text-xs text-slate-500">0 selected</span>
+                                    <button id="btn-delete-selected-users" class="px-3 py-2 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-lg text-xs transition disabled:opacity-50 disabled:cursor-not-allowed">
+                                        Delete Selected Users
+                                    </button>
+                                </div>
+                                <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                    <input type="search" id="user-search" placeholder="Search by User ID or role" class="w-full sm:max-w-md p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none">
+                                    <button id="btn-select-filtered-users" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg text-xs transition disabled:opacity-50 disabled:cursor-not-allowed">
+                                        Select Filtered
+                                    </button>
+                                    <span id="user-match-count" class="text-xs text-slate-500">0 matches</span>
+                                </div>
+                            </div>
                             <table class="w-full text-left border-collapse">
                                 <thead>
                                     <tr class="bg-slate-100 text-slate-700 text-xs uppercase tracking-wider font-semibold border-b border-slate-200">
+                                        <th class="p-4 w-14 text-center"><input type="checkbox" id="user-select-all" class="rounded border-slate-300 text-blue-600 focus:ring-blue-500/20"></th>
                                         <th class="p-4">User ID</th>
                                         <th class="p-4">Role</th>
                                         <th class="p-4">Created At</th>
@@ -325,6 +361,57 @@ if (empty($_SESSION['user_id'])) {
                                     </tr>
                                 </thead>
                                 <tbody id="user-table-body" class="divide-y divide-slate-200 text-sm text-slate-600"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="tab-archived-employees" class="tab-content hidden space-y-6">
+                    <div class="relative overflow-hidden rounded-2xl border border-amber-200 bg-[radial-gradient(circle_at_top_left,_rgba(251,191,36,0.24),_transparent_38%),linear-gradient(135deg,_#fff7ed,_#fffbeb_55%,_#ffffff)] p-6 shadow-sm">
+                        <div class="absolute right-0 top-0 h-28 w-28 rounded-full bg-amber-200/30 blur-2xl"></div>
+                        <div class="relative flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                            <div>
+                                <div class="inline-flex items-center gap-2 rounded-full border border-amber-300 bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-amber-800">Archive Vault</div>
+                                <h3 class="mt-3 text-2xl font-black tracking-tight text-slate-900">Archived Staff Records</h3>
+                                <p class="mt-2 max-w-2xl text-sm text-slate-600">Deleted staff are stored separately here so login access stays removed while attendance history remains safe and restorable.</p>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-3">
+                                <span id="archived-selection-count" class="rounded-full border border-amber-300 bg-white/80 px-3 py-1 text-xs font-semibold text-amber-800">0 selected</span>
+                                <span id="archived-employee-count" class="rounded-full border border-amber-300 bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800">0 archived</span>
+                                <button id="btn-delete-selected-archived-employees" class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-lg text-sm transition disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2">
+                                    <i data-lucide="trash-2" class="w-4 h-4"></i> Delete Selected
+                                </button>
+                                <button id="btn-restore-selected-employees" class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-lg text-sm transition disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2">
+                                    <i data-lucide="archive-restore" class="w-4 h-4"></i> Restore Selected
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-xl shadow-sm border border-amber-200 overflow-hidden">
+                        <div class="px-6 py-4 border-b border-amber-200 bg-amber-50 flex flex-col gap-3">
+                            <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                <input type="search" id="archived-employee-search" placeholder="Search archived staff by ID, name, designation, or department" class="w-full sm:max-w-md p-2 border border-amber-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none">
+                                <button id="btn-select-filtered-archived-employees" class="px-3 py-2 bg-white hover:bg-amber-100 text-amber-800 border border-amber-200 font-semibold rounded-lg text-xs transition disabled:opacity-50 disabled:cursor-not-allowed">
+                                    Select Filtered
+                                </button>
+                                <span id="archived-match-count" class="text-xs text-amber-700">0 matches</span>
+                            </div>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse">
+                                <thead>
+                                    <tr class="bg-amber-100/70 text-slate-700 text-xs uppercase tracking-wider font-semibold border-b border-amber-200">
+                                        <th class="p-4 w-14 text-center"><input type="checkbox" id="archived-employee-select-all" class="rounded border-amber-300 text-amber-600 focus:ring-amber-500/20"></th>
+                                        <th class="p-4">Staff ID</th>
+                                        <th class="p-4">Full Name</th>
+                                        <th class="p-4">Post / Designation</th>
+                                        <th class="p-4">Department</th>
+                                        <th class="p-4">HR Access</th>
+                                        <th class="p-4 text-right">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="archived-employee-table-body" class="divide-y divide-amber-100 text-sm text-slate-600"></tbody>
                             </table>
                         </div>
                     </div>
@@ -691,6 +778,38 @@ if (empty($_SESSION['user_id'])) {
         </div>
     </main>
 
+    <div id="gps-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-950/80 px-4 py-6">
+        <div class="w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div class="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+                <div>
+                    <h3 class="text-lg font-bold text-slate-900">Employee GPS Tracking</h3>
+                    <p id="gps-modal-subtitle" class="text-sm text-slate-500">Daily punch map and coordinate history.</p>
+                </div>
+                <button type="button" onclick="closeGpsModal()" class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100">
+                    Close
+                </button>
+            </div>
+            <div class="grid grid-cols-1 gap-0 lg:grid-cols-[1.6fr_1fr]">
+                <div class="min-h-[360px] border-b border-slate-200 bg-slate-100 lg:border-b-0 lg:border-r">
+                    <iframe id="gps-map-frame" title="Employee GPS map" class="h-[420px] w-full" src="about:blank" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+                </div>
+                <div class="space-y-4 p-5">
+                    <div class="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                        <div class="text-xs font-bold uppercase tracking-widest text-emerald-700">Map Mode</div>
+                        <div class="mt-2 text-sm text-emerald-900">Google Maps hybrid view focused on the latest punch location. Use the external link below for full navigation controls.</div>
+                        <a id="gps-external-link" href="#" target="_blank" rel="noopener noreferrer" class="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700">
+                            <i data-lucide="map" class="h-4 w-4"></i> Open in Google Maps
+                        </a>
+                    </div>
+                    <div>
+                        <h4 class="text-sm font-bold text-slate-900">Captured Points</h4>
+                        <div id="gps-points-list" class="mt-3 max-h-[280px] space-y-3 overflow-y-auto"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <footer class="bg-slate-900 text-slate-400 py-6 mt-12 border-t border-slate-800 text-xs text-center">
         <div class="max-w-7xl mx-auto px-4 space-y-2">
             <p>© 2026 NEPAL WELLHOPE AGRI TECH PVT.LTD. factory attendance management system.</p>
@@ -704,6 +823,7 @@ if (empty($_SESSION['user_id'])) {
         const currentUserId = Number('<?= (int)($_SESSION['user_id'] ?? 0) ?>');
         const hasFullAccessRole = ['admin', 'hr', 'it'].includes(currentUserRole);
         const isViewerRole = currentUserRole === 'viewer';
+        let hasLeaveFormFullAccess = hasFullAccessRole;
         let employees = [];
         let holidays = [];
         let attendanceRecords = [];
@@ -711,6 +831,11 @@ if (empty($_SESSION['user_id'])) {
         let leaveRequests = [];
         let travelOrders = [];
         let users = [];
+        let archivedEmployees = [];
+        let selectedEmployeeIds = new Set();
+        let selectedArchivedEmployeeIds = new Set();
+        let selectedUserIds = new Set();
+        let activeMutationRequests = 0;
 
         function formatDateTimeLocal(date) {
             const year = date.getFullYear();
@@ -722,17 +847,98 @@ if (empty($_SESSION['user_id'])) {
             return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
         }
 
-        document.addEventListener('DOMContentLoaded', () => {
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function syncLeaveFormAccessUi() {
+            const leaveStatus = document.getElementById('leave-form-status');
+            if (!leaveStatus) return;
+            if (hasLeaveFormFullAccess) {
+                leaveStatus.disabled = false;
+                return;
+            }
+            leaveStatus.value = 'Pending';
+            leaveStatus.disabled = true;
+        }
+
+        function buildGoogleHybridMapUrl(latitude, longitude, embed = false) {
+            const coords = `${latitude},${longitude}`;
+            if (embed) {
+                return `https://maps.google.com/maps?q=${encodeURIComponent(coords)}&t=h&z=19&output=embed`;
+            }
+            return `https://www.google.com/maps?q=${encodeURIComponent(coords)}&t=h&z=19`;
+        }
+
+        function closeGpsModal() {
+            const modal = document.getElementById('gps-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            document.getElementById('gps-map-frame').src = 'about:blank';
+        }
+
+        function openGpsModal(empId, date) {
+            if (!hasFullAccessRole) {
+                return;
+            }
+            const record = attendanceRecords.find(item => item.empId === empId && item.date === date);
+            if (!record || !Array.isArray(record.gpsPoints) || record.gpsPoints.length === 0) {
+                alert('No GPS points were saved for this attendance day.');
+                return;
+            }
+
+            const latestPoint = record.latestGps || record.gpsPoints[record.gpsPoints.length - 1];
+            const modal = document.getElementById('gps-modal');
+            document.getElementById('gps-modal-subtitle').textContent = `${record.name} (${record.empId}) on ${record.date}`;
+            document.getElementById('gps-map-frame').src = buildGoogleHybridMapUrl(latestPoint.latitude, latestPoint.longitude, true);
+            document.getElementById('gps-external-link').href = buildGoogleHybridMapUrl(latestPoint.latitude, latestPoint.longitude, false);
+            document.getElementById('gps-points-list').innerHTML = record.gpsPoints.map(point => {
+                const accuracyText = Number.isFinite(Number(point.accuracy)) ? `${Number(point.accuracy).toFixed(1)}m accuracy` : 'Accuracy unavailable';
+                const mapUrl = buildGoogleHybridMapUrl(point.latitude, point.longitude, false);
+                return `
+                    <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <div class="flex items-start justify-between gap-3">
+                            <div>
+                                <div class="text-sm font-semibold text-slate-900">${escapeHtml(point.label || 'Punch location')}</div>
+                                <div class="mt-1 font-mono text-xs text-slate-600">${escapeHtml(point.timestamp || '')}</div>
+                            </div>
+                            <a href="${mapUrl}" target="_blank" rel="noopener noreferrer" class="text-xs font-semibold text-blue-700 hover:text-blue-900">Open</a>
+                        </div>
+                        <div class="mt-2 font-mono text-xs leading-5 text-slate-700">Lat ${Number(point.latitude).toFixed(6)}, Lng ${Number(point.longitude).toFixed(6)}</div>
+                        <div class="mt-1 text-xs text-slate-500">${escapeHtml(accuracyText)}</div>
+                    </div>
+                `;
+            }).join('');
+
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
             lucide.createIcons();
-            document.getElementById('filter-start').value = new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().slice(0,10);
-            document.getElementById('filter-end').value = new Date().toISOString().slice(0,10);
-            document.getElementById('vehicle-filter-start').value = document.getElementById('filter-start').value;
-            document.getElementById('vehicle-filter-end').value = document.getElementById('filter-end').value;
-            document.getElementById('leave-filter-start').value = document.getElementById('filter-start').value;
-            document.getElementById('leave-filter-end').value = document.getElementById('filter-end').value;
-            document.getElementById('travel-filter-start').value = document.getElementById('filter-start').value;
-            document.getElementById('travel-filter-end').value = document.getElementById('filter-end').value;
-            document.getElementById('travel-form-date').value = new Date().toISOString().slice(0,10);
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            lucide.createIcons();
+            const today = formatDateInputValue();
+            const rollingStart = formatDateInputValue(addDays(new Date(), -30));
+            const leaveWindowEnd = formatDateInputValue(addDays(new Date(), 90));
+            document.getElementById('filter-start').value = today;
+            document.getElementById('filter-end').value = today;
+            document.getElementById('vehicle-filter-start').value = rollingStart;
+            document.getElementById('vehicle-filter-end').value = today;
+            document.getElementById('leave-filter-start').value = rollingStart;
+            document.getElementById('leave-filter-end').value = leaveWindowEnd;
+            document.getElementById('travel-filter-start').value = rollingStart;
+            document.getElementById('travel-filter-end').value = today;
+            document.getElementById('travel-form-date').value = today;
+            document.getElementById('gps-modal').addEventListener('click', event => {
+                if (event.target.id === 'gps-modal') {
+                    closeGpsModal();
+                }
+            });
             applyRoleAccess();
             updateCurrentTime();
             setInterval(updateCurrentTime, 1000);
@@ -743,12 +949,142 @@ if (empty($_SESSION['user_id'])) {
             }, 15000);
             bindEvents();
             applyUserPanelAccess();
-            fetchAllData();
+            await fetchAllData();
             switchTab('tab-attendance');
         });
 
         function updateCurrentTime() {
             document.getElementById('current-time-display').innerText = new Date().toLocaleString();
+        }
+
+        function formatDateInputValue(date = new Date()) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        function addDays(date, days) {
+            const copy = new Date(date);
+            copy.setDate(copy.getDate() + days);
+            return copy;
+        }
+
+        function isValidDateRange(start, end) {
+            return Boolean(start) && Boolean(end) && start <= end;
+        }
+
+        function wait(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function isTransientRequestFailure(message) {
+            const value = String(message || '').toLowerCase();
+            return value.includes('timeout') || value.includes('network') || value.includes('failed to fetch') || value.includes('temporarily unavailable');
+        }
+
+        function setMutationBusyState(isBusy, message = '') {
+            document.body.classList.toggle('cursor-wait', isBusy);
+            document.querySelectorAll('button, input, select, textarea').forEach(element => {
+                if (isBusy) {
+                    if (!('busyDisabled' in element.dataset)) {
+                        element.dataset.busyDisabled = element.disabled ? '1' : '0';
+                    }
+                    element.disabled = true;
+                } else if ('busyDisabled' in element.dataset) {
+                    element.disabled = element.dataset.busyDisabled === '1';
+                    delete element.dataset.busyDisabled;
+                }
+            });
+
+            if (message) {
+                showHardwareScreen(message, 'text-emerald-400');
+            }
+        }
+
+        async function requestJson(url, options = {}, settings = {}) {
+            const method = String(options.method || 'GET').toUpperCase();
+            const retries = Number.isInteger(settings.retries) ? settings.retries : (method === 'GET' ? 1 : 0);
+            const timeoutMs = Number.isInteger(settings.timeoutMs) ? settings.timeoutMs : 15000;
+            const retryDelayMs = Number.isInteger(settings.retryDelayMs) ? settings.retryDelayMs : 350;
+            const isMutation = settings.isMutation === true || method !== 'GET';
+
+            if (isMutation) {
+                activeMutationRequests += 1;
+                if (activeMutationRequests === 1) {
+                    setMutationBusyState(true, settings.busyMessage || 'Saving changes...');
+                }
+            }
+
+            try {
+                for (let attempt = 0; attempt <= retries; attempt += 1) {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+                    try {
+                        const response = await fetch(url, {
+                            ...options,
+                            headers: {
+                                'X-Requested-With': 'XMLHttpRequest',
+                                ...(options.headers || {}),
+                            },
+                            credentials: 'same-origin',
+                            signal: controller.signal,
+                        });
+                        clearTimeout(timeoutId);
+
+                        const text = await response.text();
+                        let payload = null;
+                        try {
+                            payload = text ? JSON.parse(text) : {};
+                        } catch (error) {
+                            payload = null;
+                        }
+
+                        if (!response.ok) {
+                            return {
+                                success: false,
+                                message: payload?.message || `Request failed (${response.status}).`,
+                            };
+                        }
+
+                        if (!payload || typeof payload !== 'object') {
+                            return {
+                                success: false,
+                                message: 'Server returned an unreadable response.',
+                            };
+                        }
+
+                        return payload;
+                    } catch (error) {
+                        clearTimeout(timeoutId);
+                        const isTimeout = error?.name === 'AbortError';
+                        const message = isTimeout ? 'Request timeout. Please try again.' : (error?.message || 'Network request failed.');
+
+                        if (attempt < retries && isTransientRequestFailure(message)) {
+                            await wait(retryDelayMs * (attempt + 1));
+                            continue;
+                        }
+
+                        return {
+                            success: false,
+                            message,
+                        };
+                    }
+                }
+
+                return {
+                    success: false,
+                    message: 'Request failed after retries.',
+                };
+            } finally {
+                if (isMutation) {
+                    activeMutationRequests = Math.max(0, activeMutationRequests - 1);
+                    if (activeMutationRequests === 0) {
+                        setMutationBusyState(false);
+                    }
+                }
+            }
         }
 
         function bindEvents() {
@@ -772,6 +1108,19 @@ if (empty($_SESSION['user_id'])) {
                 window.location.href = `${apiUrl}?action=downloadEmployeeTemplate`;
             });
             document.getElementById('btn-bulk-import').addEventListener('click', handleBulkImport);
+            document.getElementById('employee-select-all').addEventListener('change', event => toggleAllEmployees(event.target.checked));
+            document.getElementById('user-select-all').addEventListener('change', event => toggleAllUsers(event.target.checked));
+            document.getElementById('btn-delete-selected-employees').addEventListener('click', deleteSelectedEmployees);
+            document.getElementById('btn-delete-selected-users').addEventListener('click', deleteSelectedUsers);
+            document.getElementById('employee-search').addEventListener('input', renderEmployeeTable);
+            document.getElementById('archived-employee-search').addEventListener('input', renderArchivedEmployeeTable);
+            document.getElementById('user-search').addEventListener('input', renderUserTable);
+            document.getElementById('btn-select-filtered-employees').addEventListener('click', toggleFilteredEmployees);
+            document.getElementById('archived-employee-select-all').addEventListener('change', event => toggleAllArchivedEmployees(event.target.checked));
+            document.getElementById('btn-select-filtered-archived-employees').addEventListener('click', toggleFilteredArchivedEmployees);
+            document.getElementById('btn-restore-selected-employees').addEventListener('click', restoreSelectedEmployees);
+            document.getElementById('btn-delete-selected-archived-employees').addEventListener('click', deleteSelectedArchivedEmployees);
+            document.getElementById('btn-select-filtered-users').addEventListener('click', toggleFilteredUsers);
         }
 
         function applyRoleAccess() {
@@ -780,18 +1129,15 @@ if (empty($_SESSION['user_id'])) {
             }
 
             document.getElementById('btn-tab-employees')?.classList.add('hidden');
+            document.getElementById('btn-tab-archived-employees')?.classList.add('hidden');
             document.getElementById('btn-tab-holidays')?.classList.add('hidden');
             document.getElementById('btn-tab-vehicle-usage')?.classList.add('hidden');
             document.getElementById('btn-tab-travel-form')?.classList.add('hidden');
             document.getElementById('tab-employees')?.classList.add('hidden');
+            document.getElementById('tab-archived-employees')?.classList.add('hidden');
             document.getElementById('tab-holidays')?.classList.add('hidden');
             document.getElementById('tab-vehicle-usage')?.classList.add('hidden');
             document.getElementById('tab-travel-form')?.classList.add('hidden');
-
-            const punchLink = document.querySelector('a[href="punch.php"]');
-            if (punchLink) {
-                punchLink.classList.add('hidden');
-            }
 
             const hrEditorWrap = document.getElementById('hr-editor')?.closest('div');
             if (hrEditorWrap) {
@@ -803,11 +1149,7 @@ if (empty($_SESSION['user_id'])) {
                 adminScreen.classList.add('hidden');
             }
 
-            const leaveStatus = document.getElementById('leave-form-status');
-            if (leaveStatus) {
-                leaveStatus.value = 'Pending';
-                leaveStatus.disabled = true;
-            }
+            syncLeaveFormAccessUi();
         }
 
         function applyUserPanelAccess() {
@@ -898,40 +1240,254 @@ if (empty($_SESSION['user_id'])) {
         }
 
         async function fetchAllData() {
-            await Promise.all([fetchEmployees(), fetchHolidays(), fetchUsers()]);
-            await renderAttendanceGrid();
-            await renderVehicleUsageGrid();
-            await renderLeaveGrid();
-            await renderTravelGrid();
+            await Promise.all([fetchEmployees(), fetchArchivedEmployees(), fetchHolidays(), fetchUsers()]);
             updateLiveStats();
+        }
+
+        async function fetchArchivedEmployees() {
+            if (!hasFullAccessRole) {
+                archivedEmployees = [];
+                selectedArchivedEmployeeIds = new Set();
+                renderArchivedEmployeeTable();
+                return;
+            }
+            const payload = await requestJson(`${apiUrl}?action=listArchivedEmployees`);
+            if (!payload.success) {
+                showHardwareScreen(payload.message || 'Unable to load archived employees.', 'text-red-400');
+                return;
+            }
+            archivedEmployees = payload.employees || [];
+            selectedArchivedEmployeeIds = new Set([...selectedArchivedEmployeeIds].filter(id => archivedEmployees.some(emp => emp.id === id)));
+            renderArchivedEmployeeTable();
         }
 
         async function fetchUsers() {
             if (!hasFullAccessRole) {
                 users = [];
+                selectedUserIds = new Set();
                 return;
             }
-            const response = await fetch(`${apiUrl}?action=listUsers`);
-            const payload = await response.json();
+            const payload = await requestJson(`${apiUrl}?action=listUsers`);
             if (!payload.success) {
                 showHardwareScreen(payload.message || 'Unable to load user accounts.', 'text-red-400');
                 return;
             }
             users = payload.users;
+            selectedUserIds = new Set([...selectedUserIds].filter(id => users.some(user => Number(user.id) === Number(id) && Number(user.id) !== currentUserId)));
             renderUserTable();
         }
 
         async function fetchEmployees() {
-            const response = await fetch(`${apiUrl}?action=listEmployees`);
-            const payload = await response.json();
+            const payload = await requestJson(`${apiUrl}?action=listEmployees`);
             if (!payload.success) return;
             employees = payload.employees;
+            hasLeaveFormFullAccess = hasFullAccessRole;
+            syncLeaveFormAccessUi();
+            selectedEmployeeIds = new Set([...selectedEmployeeIds].filter(id => employees.some(emp => emp.id === id)));
             populateHrEditorDropdown();
             populateAttendanceEmployeeFilter();
             populateLeaveEmployeeOptions();
             populateTravelEmployeeOptions();
             populateUserUsernameOptions();
             renderEmployeeTable();
+        }
+
+        function updateEmployeeSelectionControls() {
+            const filteredEmployees = getFilteredEmployees();
+            const total = filteredEmployees.length;
+            const selectedCount = selectedEmployeeIds.size;
+            const selectedFilteredCount = filteredEmployees.filter(emp => selectedEmployeeIds.has(emp.id)).length;
+            const label = document.getElementById('employee-selection-count');
+            const matchLabel = document.getElementById('employee-match-count');
+            const deleteBtn = document.getElementById('btn-delete-selected-employees');
+            const selectAll = document.getElementById('employee-select-all');
+            const selectFilteredBtn = document.getElementById('btn-select-filtered-employees');
+            if (label) {
+                label.textContent = `${selectedCount} selected${total !== employees.length ? ` (${selectedFilteredCount} in filter)` : ''}`;
+            }
+            if (matchLabel) {
+                matchLabel.textContent = `${total} match${total === 1 ? '' : 'es'}`;
+            }
+            if (deleteBtn) {
+                deleteBtn.disabled = isViewerRole || selectedCount === 0;
+            }
+            if (selectFilteredBtn) {
+                selectFilteredBtn.disabled = isViewerRole || total === 0;
+                selectFilteredBtn.textContent = selectedFilteredCount === total && total > 0 ? 'Unselect Filtered' : 'Select Filtered';
+            }
+            if (selectAll) {
+                selectAll.checked = total > 0 && selectedFilteredCount === total;
+                selectAll.indeterminate = selectedFilteredCount > 0 && selectedFilteredCount < total;
+                selectAll.disabled = isViewerRole || total === 0;
+            }
+        }
+
+        function updateUserSelectionControls() {
+            const selectableUsers = getFilteredUsers();
+            const total = selectableUsers.length;
+            const selectedCount = selectedUserIds.size;
+            const selectedFilteredCount = selectableUsers.filter(user => selectedUserIds.has(Number(user.id))).length;
+            const label = document.getElementById('user-selection-count');
+            const matchLabel = document.getElementById('user-match-count');
+            const deleteBtn = document.getElementById('btn-delete-selected-users');
+            const selectAll = document.getElementById('user-select-all');
+            const selectFilteredBtn = document.getElementById('btn-select-filtered-users');
+            if (label) {
+                label.textContent = `${selectedCount} selected${total !== users.filter(user => Number(user.id) !== currentUserId).length ? ` (${selectedFilteredCount} in filter)` : ''}`;
+            }
+            if (matchLabel) {
+                matchLabel.textContent = `${total} match${total === 1 ? '' : 'es'}`;
+            }
+            if (deleteBtn) {
+                deleteBtn.disabled = isViewerRole || selectedCount === 0;
+            }
+            if (selectFilteredBtn) {
+                selectFilteredBtn.disabled = isViewerRole || total === 0;
+                selectFilteredBtn.textContent = selectedFilteredCount === total && total > 0 ? 'Unselect Filtered' : 'Select Filtered';
+            }
+            if (selectAll) {
+                selectAll.checked = total > 0 && selectedFilteredCount === total;
+                selectAll.indeterminate = selectedFilteredCount > 0 && selectedFilteredCount < total;
+                selectAll.disabled = isViewerRole || total === 0;
+            }
+        }
+
+        function getEmployeeSearchTerm() {
+            return String(document.getElementById('employee-search')?.value || '').trim().toLowerCase();
+        }
+
+        function getUserSearchTerm() {
+            return String(document.getElementById('user-search')?.value || '').trim().toLowerCase();
+        }
+
+        function getArchivedEmployeeSearchTerm() {
+            return String(document.getElementById('archived-employee-search')?.value || '').trim().toLowerCase();
+        }
+
+        function getFilteredEmployees() {
+            const term = getEmployeeSearchTerm();
+            if (!term) {
+                return employees;
+            }
+            return employees.filter(emp => [emp.id, emp.name, emp.designation, emp.department].some(value => String(value || '').toLowerCase().includes(term)));
+        }
+
+        function getFilteredUsers() {
+            const term = getUserSearchTerm();
+            const baseUsers = users.filter(user => Number(user.id) !== currentUserId);
+            if (!term) {
+                return baseUsers;
+            }
+            return baseUsers.filter(user => [user.username, user.role, user.created_at].some(value => String(value || '').toLowerCase().includes(term)));
+        }
+
+        function getFilteredArchivedEmployees() {
+            const term = getArchivedEmployeeSearchTerm();
+            if (!term) {
+                return archivedEmployees;
+            }
+            return archivedEmployees.filter(emp => [emp.id, emp.name, emp.designation, emp.department].some(value => String(value || '').toLowerCase().includes(term)));
+        }
+
+        function toggleEmployeeSelection(id, checked) {
+            if (checked) {
+                selectedEmployeeIds.add(id);
+            } else {
+                selectedEmployeeIds.delete(id);
+            }
+            updateEmployeeSelectionControls();
+        }
+
+        function toggleUserSelection(id, checked) {
+            const numericId = Number(id);
+            if (numericId === currentUserId) {
+                return;
+            }
+            if (checked) {
+                selectedUserIds.add(numericId);
+            } else {
+                selectedUserIds.delete(numericId);
+            }
+            updateUserSelectionControls();
+        }
+
+        function toggleArchivedEmployeeSelection(id, checked) {
+            if (checked) {
+                selectedArchivedEmployeeIds.add(id);
+            } else {
+                selectedArchivedEmployeeIds.delete(id);
+            }
+            updateArchivedEmployeeSelectionControls();
+        }
+
+        function toggleAllEmployees(checked) {
+            selectFilteredEmployees(checked);
+            renderEmployeeTable();
+        }
+
+        function toggleAllUsers(checked) {
+            selectFilteredUsers(checked);
+            renderUserTable();
+        }
+
+        function toggleAllArchivedEmployees(checked) {
+            selectFilteredArchivedEmployees(checked);
+            renderArchivedEmployeeTable();
+        }
+
+        function selectFilteredEmployees(checked) {
+            const filteredEmployees = getFilteredEmployees();
+            if (checked) {
+                filteredEmployees.forEach(emp => selectedEmployeeIds.add(emp.id));
+            } else {
+                filteredEmployees.forEach(emp => selectedEmployeeIds.delete(emp.id));
+            }
+        }
+
+        function toggleFilteredEmployees() {
+            const filteredEmployees = getFilteredEmployees();
+            const allSelected = filteredEmployees.length > 0 && filteredEmployees.every(emp => selectedEmployeeIds.has(emp.id));
+            selectFilteredEmployees(!allSelected);
+            renderEmployeeTable();
+        }
+
+        function selectFilteredUsers(checked) {
+            const filteredUsers = getFilteredUsers();
+            if (checked) {
+                filteredUsers.forEach(user => selectedUserIds.add(Number(user.id)));
+            } else {
+                filteredUsers.forEach(user => selectedUserIds.delete(Number(user.id)));
+            }
+        }
+
+        function toggleFilteredUsers() {
+            const filteredUsers = getFilteredUsers();
+            const allSelected = filteredUsers.length > 0 && filteredUsers.every(user => selectedUserIds.has(Number(user.id)));
+            selectFilteredUsers(!allSelected);
+            renderUserTable();
+        }
+
+        function selectFilteredArchivedEmployees(checked) {
+            const filteredEmployees = getFilteredArchivedEmployees();
+            if (checked) {
+                filteredEmployees.forEach(emp => selectedArchivedEmployeeIds.add(emp.id));
+            } else {
+                filteredEmployees.forEach(emp => selectedArchivedEmployeeIds.delete(emp.id));
+            }
+        }
+
+        function toggleFilteredArchivedEmployees() {
+            const filteredEmployees = getFilteredArchivedEmployees();
+            const allSelected = filteredEmployees.length > 0 && filteredEmployees.every(emp => selectedArchivedEmployeeIds.has(emp.id));
+            selectFilteredArchivedEmployees(!allSelected);
+            renderArchivedEmployeeTable();
+        }
+
+        function buildSelectionPreview(items, label, maxItems = 12) {
+            const visibleItems = items.slice(0, maxItems);
+            const remainder = items.length - visibleItems.length;
+            const suffix = remainder > 0 ? `\n...and ${remainder} more ${label}.` : '';
+            return visibleItems.join(', ') + suffix;
         }
 
         function populateLeaveEmployeeOptions() {
@@ -998,8 +1554,7 @@ if (empty($_SESSION['user_id'])) {
         }
 
         async function fetchHolidays() {
-            const response = await fetch(`${apiUrl}?action=listHolidays`);
-            const payload = await response.json();
+            const payload = await requestJson(`${apiUrl}?action=listHolidays`);
             if (!payload.success) return;
             holidays = payload.holidays;
             renderHolidayTable();
@@ -1040,6 +1595,76 @@ if (empty($_SESSION['user_id'])) {
             document.getElementById('stat-office').innerText = employees.filter(e => e.department === 'Office').length;
         }
 
+        function updateArchivedEmployeeSelectionControls() {
+            const filteredEmployees = getFilteredArchivedEmployees();
+            const total = filteredEmployees.length;
+            const selectedCount = selectedArchivedEmployeeIds.size;
+            const selectedFilteredCount = filteredEmployees.filter(emp => selectedArchivedEmployeeIds.has(emp.id)).length;
+            const countLabel = document.getElementById('archived-employee-count');
+            const selectionLabel = document.getElementById('archived-selection-count');
+            const matchLabel = document.getElementById('archived-match-count');
+            const selectAll = document.getElementById('archived-employee-select-all');
+            const selectFilteredBtn = document.getElementById('btn-select-filtered-archived-employees');
+            const deleteBtn = document.getElementById('btn-delete-selected-archived-employees');
+            const restoreBtn = document.getElementById('btn-restore-selected-employees');
+
+            if (countLabel) {
+                countLabel.textContent = `${archivedEmployees.length} archived`;
+            }
+            if (selectionLabel) {
+                selectionLabel.textContent = `${selectedCount} selected${total !== archivedEmployees.length ? ` (${selectedFilteredCount} in filter)` : ''}`;
+            }
+            if (matchLabel) {
+                matchLabel.textContent = `${total} match${total === 1 ? '' : 'es'}`;
+            }
+            if (selectAll) {
+                selectAll.checked = total > 0 && selectedFilteredCount === total;
+                selectAll.indeterminate = selectedFilteredCount > 0 && selectedFilteredCount < total;
+                selectAll.disabled = isViewerRole || total === 0;
+            }
+            if (selectFilteredBtn) {
+                selectFilteredBtn.disabled = isViewerRole || total === 0;
+                selectFilteredBtn.textContent = selectedFilteredCount === total && total > 0 ? 'Unselect Filtered' : 'Select Filtered';
+            }
+            if (deleteBtn) {
+                deleteBtn.disabled = isViewerRole || selectedCount === 0;
+            }
+            if (restoreBtn) {
+                restoreBtn.disabled = isViewerRole || selectedCount === 0;
+            }
+        }
+
+        function renderArchivedEmployeeTable() {
+            const tbody = document.getElementById('archived-employee-table-body');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+            const filteredEmployees = getFilteredArchivedEmployees();
+            if (filteredEmployees.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="7" class="p-8 text-center text-slate-400 italic">No archived staff matched the current search.</td></tr>`;
+                updateArchivedEmployeeSelectionControls();
+                return;
+            }
+            filteredEmployees.forEach(emp => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-amber-50 border-b border-amber-100';
+                tr.innerHTML = `
+                    <td class="p-4 text-center"><input type="checkbox" class="archived-employee-row-checkbox rounded border-amber-300 text-amber-600 focus:ring-amber-500/20" data-employee-id="${escapeHtml(emp.id)}" ${selectedArchivedEmployeeIds.has(emp.id) ? 'checked' : ''} ${isViewerRole ? 'disabled' : ''}></td>
+                    <td class="p-4 font-mono font-bold text-slate-900">${emp.id}</td>
+                    <td class="p-4">${emp.name}</td>
+                    <td class="p-4 text-slate-600">${emp.designation || '<span class="text-slate-400 italic text-xs">—</span>'}</td>
+                    <td class="p-4"><span class="px-2 py-1 rounded text-xs font-bold ${emp.department === 'Production' ? 'bg-purple-100 text-purple-700' : 'bg-cyan-100 text-cyan-700'}">${emp.department}</span></td>
+                    <td class="p-4">${Number(emp.can_edit_attendance || 0) === 1 ? '<span class="px-2 py-1 rounded text-xs font-bold bg-emerald-100 text-emerald-700">HR</span>' : '<span class="text-slate-400 text-xs">No</span>'}</td>
+                    <td class="p-4 text-right">${isViewerRole ? '<span class="text-slate-300 text-xs">View only</span>' : `<div class="inline-flex items-center gap-3"><button onclick="restoreEmployee('${emp.id}')" class="text-amber-700 hover:text-amber-900 font-semibold text-xs inline-flex items-center gap-1"><i data-lucide="archive-restore" class="w-3.5 h-3.5"></i> Restore</button><button onclick="deleteArchivedEmployee('${emp.id}')" class="text-rose-600 hover:text-rose-900 font-semibold text-xs inline-flex items-center gap-1"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete</button></div>`}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+            document.querySelectorAll('.archived-employee-row-checkbox').forEach(checkbox => {
+                checkbox.addEventListener('change', event => toggleArchivedEmployeeSelection(event.target.dataset.employeeId || '', event.target.checked));
+            });
+            updateArchivedEmployeeSelectionControls();
+            lucide.createIcons();
+        }
+
         function switchTab(tabId) {
             document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
             document.getElementById(tabId).classList.remove('hidden');
@@ -1056,6 +1681,9 @@ if (empty($_SESSION['user_id'])) {
             }
             if (tabId === 'tab-travel-form') {
                 renderTravelGrid();
+            }
+            if (tabId === 'tab-archived-employees') {
+                renderArchivedEmployeeTable();
             }
         }
 
@@ -1101,10 +1729,8 @@ if (empty($_SESSION['user_id'])) {
             body.append('vehiclePurpose', vehiclePurpose.trim());
 
             let payload;
-            try {
-                const response = await fetch(apiUrl, { method: 'POST', body });
-                payload = await response.json();
-            } catch (e) {
+            payload = await requestJson(apiUrl, { method: 'POST', body });
+            if (!payload.success && !payload.message) {
                 alert('Request failed. Please check your connection and try again.');
                 return;
             }
@@ -1132,10 +1758,8 @@ if (empty($_SESSION['user_id'])) {
             body.append('date', date);
 
             let payload;
-            try {
-                const response = await fetch(apiUrl, { method: 'POST', body });
-                payload = await response.json();
-            } catch (e) {
+            payload = await requestJson(apiUrl, { method: 'POST', body });
+            if (!payload.success && !payload.message) {
                 alert('Request failed. Please check your connection and try again.');
                 return;
             }
@@ -1153,14 +1777,17 @@ if (empty($_SESSION['user_id'])) {
             const end = document.getElementById('filter-end').value;
             const department = document.getElementById('filter-dept').value;
             const empId = document.getElementById('filter-emp').value;
-            const response = await fetch(`${apiUrl}?action=attendanceRecords&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&department=${encodeURIComponent(department)}&empId=${encodeURIComponent(empId)}`);
-            const payload = await response.json();
+            if (!isValidDateRange(start, end)) {
+                alert('Please choose a valid attendance date range.');
+                return;
+            }
+            const payload = await requestJson(`${apiUrl}?action=attendanceRecords&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&department=${encodeURIComponent(department)}&empId=${encodeURIComponent(empId)}`);
             const tbody = document.getElementById('attendance-table-body');
             const summaryBox = document.getElementById('attendance-summary');
             tbody.innerHTML = '';
             if (!payload.success || payload.records.length === 0) {
                 attendanceRecords = [];
-                tbody.innerHTML = `<tr><td colspan="13" class="p-8 text-center text-slate-400 italic">No attendance records found for the selected filters.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="14" class="p-8 text-center text-slate-400 italic">No attendance records found for the selected filters.</td></tr>`;
                 if (summaryBox) {
                     summaryBox.classList.add('hidden');
                     summaryBox.innerHTML = '';
@@ -1182,6 +1809,7 @@ if (empty($_SESSION['user_id'])) {
                     <td class="p-4 text-xs font-semibold"><span class="px-2 py-1 rounded ${record.isSpecial ? 'bg-amber-100 text-amber-800 border border-amber-200' : 'bg-slate-100 text-slate-700'}">${record.dayType}</span></td>
                     <td class="p-4 text-xs font-mono leading-5 text-slate-700">${sessionText}</td>
                     <td class="p-4 text-xs font-mono leading-5 text-slate-700">${record.vehicleText || 'No vehicle used'}</td>
+                    <td class="p-4 text-xs text-slate-700">${hasFullAccessRole ? (record.gpsPointCount > 0 ? `<button onclick="openGpsModal('${record.empId}','${record.date}')" class="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 font-semibold text-emerald-700 transition hover:bg-emerald-100"><i data-lucide="map-pinned" class="w-3.5 h-3.5"></i> ${record.gpsPointCount} point${record.gpsPointCount === 1 ? '' : 's'}</button>` : '<span class="text-slate-400">No GPS</span>') : '<span class="text-slate-300">Restricted</span>'}</td>
                     <td class="p-4 text-xs font-semibold">${record.leaveType === 'Full Leave' ? '<span class="px-2 py-1 rounded bg-red-100 text-red-700">Full Leave</span>' : record.leaveType === 'Half Leave' ? '<span class="px-2 py-1 rounded bg-amber-100 text-amber-700">Half Leave</span>' : record.leaveType === 'Present' ? '<span class="px-2 py-1 rounded bg-emerald-100 text-emerald-700">Present</span>' : '<span class="text-slate-400">-</span>'}</td>
                     <td class="p-4 font-mono">${Number(record.leaveDays || 0).toFixed(2)}</td>
                     <td class="p-4 font-mono">${record.regularHours.toFixed(2)}h</td>
@@ -1214,6 +1842,8 @@ if (empty($_SESSION['user_id'])) {
                     </div>
                 `;
             }
+
+            lucide.createIcons();
         }
 
         async function handleEmployeeSubmit(event) {
@@ -1248,12 +1878,13 @@ if (empty($_SESSION['user_id'])) {
             formData.append('designation', designation);
             formData.append('department', department);
             formData.append('canEditAttendance', canEditAttendance ? '1' : '0');
-            const response = await fetch(apiUrl, { method: 'POST', body: formData });
-            const payload = await response.json();
+            const payload = await requestJson(apiUrl, { method: 'POST', body: formData });
             showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
             if (payload.success) {
                 resetEmployeeForm();
                 await fetchEmployees();
+                await fetchArchivedEmployees();
+                await fetchUsers();
                 await renderAttendanceGrid();
                 await renderVehicleUsageGrid();
             }
@@ -1276,13 +1907,148 @@ if (empty($_SESSION['user_id'])) {
         }
 
         async function deleteEmployee(id) {
-            if (!confirm('Delete this employee and all attendance logs?')) return;
-            const response = await fetch(`${apiUrl}?action=deleteEmployee&id=${encodeURIComponent(id)}`);
-            const payload = await response.json();
+            if (!confirm('Archive this employee and remove login access? Attendance logs will be preserved.')) return;
+            const body = new URLSearchParams();
+            body.append('action', 'deleteEmployee');
+            body.append('id', String(id));
+            const payload = await requestJson(apiUrl, { method: 'POST', body }, { isMutation: true, busyMessage: 'Deleting employee...' });
             showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
-            await fetchEmployees();
-            await renderAttendanceGrid();
-            await renderVehicleUsageGrid();
+            if (payload.success) {
+                selectedEmployeeIds.delete(String(id));
+                await fetchEmployees();
+                await fetchArchivedEmployees();
+                await fetchUsers();
+                await renderAttendanceGrid();
+                await renderVehicleUsageGrid();
+                updateLiveStats();
+            }
+        }
+
+        async function deleteSelectedEmployees() {
+            if (isViewerRole) {
+                alert('Only admin, HR, and IT users can delete staff records.');
+                return;
+            }
+            const ids = [...selectedEmployeeIds];
+            if (ids.length === 0) {
+                alert('Select at least one employee first.');
+                return;
+            }
+            const preview = buildSelectionPreview(ids, 'employee record(s)');
+            if (!confirm(`Delete ${ids.length} selected employee record(s) and their linked login users?\n\nSelected Staff IDs:\n${preview}`)) return;
+
+            const body = new URLSearchParams();
+            body.append('action', 'deleteEmployees');
+            body.append('ids', JSON.stringify(ids));
+            const payload = await requestJson(apiUrl, { method: 'POST', body }, { isMutation: true, busyMessage: 'Deleting selected employees...' });
+            showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
+            if (payload.success) {
+                selectedEmployeeIds = new Set();
+                await fetchEmployees();
+                await fetchArchivedEmployees();
+                await fetchUsers();
+                await renderAttendanceGrid();
+                await renderVehicleUsageGrid();
+                updateLiveStats();
+            }
+        }
+
+        async function restoreEmployee(id) {
+            if (!hasFullAccessRole) {
+                alert('Only admin, HR, and IT users can restore archived staff.');
+                return;
+            }
+            if (!confirm(`Restore archived employee "${id}" and recreate the linked login user?`)) return;
+
+            const body = new URLSearchParams();
+            body.append('action', 'restoreEmployee');
+            body.append('id', String(id));
+            const payload = await requestJson(apiUrl, { method: 'POST', body }, { isMutation: true, busyMessage: 'Restoring archived employee...' });
+            showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
+            if (payload.success) {
+                selectedArchivedEmployeeIds.delete(String(id));
+                await fetchEmployees();
+                await fetchArchivedEmployees();
+                await fetchUsers();
+                await renderAttendanceGrid();
+                await renderVehicleUsageGrid();
+                updateLiveStats();
+            }
+        }
+
+        async function restoreSelectedEmployees() {
+            if (!hasFullAccessRole) {
+                alert('Only admin, HR, and IT users can restore archived staff.');
+                return;
+            }
+            const ids = [...selectedArchivedEmployeeIds];
+            if (ids.length === 0) {
+                alert('Select at least one archived employee first.');
+                return;
+            }
+            const preview = buildSelectionPreview(ids, 'archived employee(s)');
+            if (!confirm(`Restore ${ids.length} archived employee(s) and recreate their linked login users?\n\nSelected Staff IDs:\n${preview}`)) return;
+
+            const body = new URLSearchParams();
+            body.append('action', 'restoreEmployees');
+            body.append('ids', JSON.stringify(ids));
+            const payload = await requestJson(apiUrl, { method: 'POST', body }, { isMutation: true, busyMessage: 'Restoring selected employees...' });
+            showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
+            if (payload.success) {
+                selectedArchivedEmployeeIds = new Set();
+                await fetchEmployees();
+                await fetchArchivedEmployees();
+                await fetchUsers();
+                await renderAttendanceGrid();
+                await renderVehicleUsageGrid();
+                updateLiveStats();
+            }
+        }
+
+        async function deleteArchivedEmployee(id) {
+            if (!hasFullAccessRole) {
+                alert('Only admin, HR, and IT users can delete archived staff.');
+                return;
+            }
+            if (!confirm(`Delete archived employee "${id}" from staff directories permanently?\n\nAttendance history will stay safe, but this staff profile will no longer appear in Archived Staff and cannot be restored.`)) return;
+
+            const body = new URLSearchParams();
+            body.append('action', 'purgeArchivedEmployee');
+            body.append('id', String(id));
+            const payload = await requestJson(apiUrl, { method: 'POST', body }, { isMutation: true, busyMessage: 'Deleting archived employee...' });
+            showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
+            if (payload.success) {
+                selectedArchivedEmployeeIds.delete(String(id));
+                await fetchArchivedEmployees();
+                await fetchUsers();
+                updateLiveStats();
+            }
+        }
+
+        async function deleteSelectedArchivedEmployees() {
+            if (!hasFullAccessRole) {
+                alert('Only admin, HR, and IT users can delete archived staff.');
+                return;
+            }
+            const ids = [...selectedArchivedEmployeeIds];
+            if (ids.length === 0) {
+                alert('Select at least one archived employee first.');
+                return;
+            }
+            const preview = buildSelectionPreview(ids, 'archived employee(s)');
+            if (!confirm(`Delete ${ids.length} archived employee record(s) from staff directories permanently?\n\nSelected Staff IDs:\n${preview}\n\nAttendance history will be preserved, but these profiles will no longer appear in Archived Staff and cannot be restored.`)) return;
+
+            const body = new URLSearchParams();
+            body.append('action', 'purgeArchivedEmployees');
+            body.append('ids', JSON.stringify(ids));
+            const payload = await requestJson(apiUrl, { method: 'POST', body }, { isMutation: true, busyMessage: 'Deleting archived employees...' });
+            showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
+            if (payload.success) {
+                selectedArchivedEmployeeIds = new Set();
+                await fetchArchivedEmployees();
+                await fetchUsers();
+                updateLiveStats();
+            }
         }
 
         function resetEmployeeForm() {
@@ -1298,10 +2064,17 @@ if (empty($_SESSION['user_id'])) {
         async function renderEmployeeTable() {
             const tbody = document.getElementById('employee-table-body');
             tbody.innerHTML = '';
-            employees.forEach(emp => {
+            const filteredEmployees = getFilteredEmployees();
+            if (filteredEmployees.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="7" class="p-8 text-center text-slate-400 italic">No staff matched the current search.</td></tr>`;
+                updateEmployeeSelectionControls();
+                return;
+            }
+            filteredEmployees.forEach(emp => {
                 const tr = document.createElement('tr');
                 tr.className = 'hover:bg-slate-50 border-b border-slate-150';
                 tr.innerHTML = `
+                    <td class="p-4 text-center"><input type="checkbox" class="employee-row-checkbox rounded border-slate-300 text-blue-600 focus:ring-blue-500/20" data-employee-id="${escapeHtml(emp.id)}" ${selectedEmployeeIds.has(emp.id) ? 'checked' : ''} ${isViewerRole ? 'disabled' : ''}></td>
                     <td class="p-4 font-mono font-bold text-slate-900">${emp.id}</td>
                     <td class="p-4">${emp.name}</td>
                     <td class="p-4 text-slate-600">${emp.designation || '<span class="text-slate-400 italic text-xs">—</span>'}</td>
@@ -1314,6 +2087,10 @@ if (empty($_SESSION['user_id'])) {
                 `;
                 tbody.appendChild(tr);
             });
+            document.querySelectorAll('.employee-row-checkbox').forEach(checkbox => {
+                checkbox.addEventListener('change', event => toggleEmployeeSelection(event.target.dataset.employeeId || '', event.target.checked));
+            });
+            updateEmployeeSelectionControls();
             lucide.createIcons();
         }
 
@@ -1343,10 +2120,8 @@ if (empty($_SESSION['user_id'])) {
             formData.append('xlsxFile', file);
 
             let payload;
-            try {
-                const response = await fetch(apiUrl, { method: 'POST', body: formData });
-                payload = await response.json();
-            } catch (e) {
+            payload = await requestJson(apiUrl, { method: 'POST', body: formData });
+            if (!payload.success && !payload.message) {
                 resultBox.className = 'mt-3 text-sm text-red-600';
                 resultBox.textContent = 'Request failed. Check your connection and try again.';
                 btn.disabled = false;
@@ -1363,6 +2138,8 @@ if (empty($_SESSION['user_id'])) {
                 resultBox.textContent = payload.message + errNote;
                 fileInput.value = '';
                 await fetchEmployees();
+                await fetchArchivedEmployees();
+                await fetchUsers();
                 await renderAttendanceGrid();
                 await renderVehicleUsageGrid();
                 updateLiveStats();
@@ -1390,8 +2167,7 @@ if (empty($_SESSION['user_id'])) {
             body.append('action', 'saveHoliday');
             body.append('date', date);
             body.append('description', description);
-            const response = await fetch(apiUrl, { method: 'POST', body });
-            const payload = await response.json();
+            const payload = await requestJson(apiUrl, { method: 'POST', body });
             showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
             if (payload.success) {
                 document.getElementById('holiday-form').reset();
@@ -1404,8 +2180,7 @@ if (empty($_SESSION['user_id'])) {
             const start = document.getElementById('vehicle-filter-start').value;
             const end = document.getElementById('vehicle-filter-end').value;
             const department = document.getElementById('vehicle-filter-dept').value;
-            const response = await fetch(`${apiUrl}?action=vehicleUsageRecords&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&department=${encodeURIComponent(department)}`);
-            const payload = await response.json();
+            const payload = await requestJson(`${apiUrl}?action=vehicleUsageRecords&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&department=${encodeURIComponent(department)}`);
             const tbody = document.getElementById('vehicle-usage-table-body');
             tbody.innerHTML = '';
 
@@ -1471,8 +2246,7 @@ if (empty($_SESSION['user_id'])) {
             body.append('vehicleName', vehicleName.trim());
             body.append('vehiclePurpose', vehiclePurpose.trim());
 
-            const response = await fetch(apiUrl, { method: 'POST', body });
-            const payload = await response.json();
+            const payload = await requestJson(apiUrl, { method: 'POST', body });
             showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
             if (payload.success) {
                 await renderVehicleUsageGrid();
@@ -1498,8 +2272,7 @@ if (empty($_SESSION['user_id'])) {
             params.append('endTimestamp', record.endTimestamp || '');
             params.append('vehicleName', record.vehicleName || '');
             params.append('vehiclePurpose', record.vehiclePurpose || '');
-            const response = await fetch(`${apiUrl}?${params.toString()}`);
-            const payload = await response.json();
+            const payload = await requestJson(apiUrl, { method: 'POST', body: params }, { isMutation: true, busyMessage: 'Deleting vehicle session...' });
             showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
             if (payload.success) {
                 await renderVehicleUsageGrid();
@@ -1542,10 +2315,8 @@ if (empty($_SESSION['user_id'])) {
             body.append('role', role);
 
             let payload;
-            try {
-                const response = await fetch(apiUrl, { method: 'POST', body });
-                payload = await response.json();
-            } catch (error) {
+            payload = await requestJson(apiUrl, { method: 'POST', body });
+            if (!payload.success && !payload.message) {
                 setUserFormFeedback('Could not contact the server while creating the login user.', false);
                 return;
             }
@@ -1555,6 +2326,8 @@ if (empty($_SESSION['user_id'])) {
 
             if (payload.success) {
                 resetUserForm();
+                await fetchEmployees();
+                await fetchArchivedEmployees();
                 await fetchUsers();
             }
         }
@@ -1564,11 +2337,23 @@ if (empty($_SESSION['user_id'])) {
             if (!tbody) return;
             tbody.innerHTML = '';
 
-            users.forEach(user => {
+            const searchTerm = getUserSearchTerm();
+            const filteredUsers = searchTerm
+                ? users.filter(user => [user.username, user.role, user.created_at].some(value => String(value || '').toLowerCase().includes(searchTerm)))
+                : users;
+
+            if (filteredUsers.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" class="p-8 text-center text-slate-400 italic">No users matched the current search.</td></tr>`;
+                updateUserSelectionControls();
+                return;
+            }
+
+            filteredUsers.forEach(user => {
                 const tr = document.createElement('tr');
                 tr.className = 'hover:bg-slate-50 border-b border-slate-150';
                 const isCurrent = Number(user.id) === currentUserId;
                 tr.innerHTML = `
+                    <td class="p-4 text-center"><input type="checkbox" class="user-row-checkbox rounded border-slate-300 text-blue-600 focus:ring-blue-500/20" data-user-id="${user.id}" ${selectedUserIds.has(Number(user.id)) ? 'checked' : ''} ${isViewerRole || isCurrent ? 'disabled' : ''}></td>
                     <td class="p-4 font-mono font-bold text-slate-900">${user.username}${isCurrent ? ' <span class="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 align-middle">You</span>' : ''}</td>
                     <td class="p-4"><span class="px-2 py-1 rounded text-xs font-bold ${user.role === 'admin' ? 'bg-blue-100 text-blue-700' : user.role === 'hr' ? 'bg-emerald-100 text-emerald-700' : user.role === 'it' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-700'}">${user.role}</span></td>
                     <td class="p-4 font-mono text-xs">${user.created_at || ''}</td>
@@ -1579,6 +2364,10 @@ if (empty($_SESSION['user_id'])) {
                 `;
                 tbody.appendChild(tr);
             });
+            document.querySelectorAll('.user-row-checkbox').forEach(checkbox => {
+                checkbox.addEventListener('change', event => toggleUserSelection(event.target.dataset.userId || '0', event.target.checked));
+            });
+            updateUserSelectionControls();
             lucide.createIcons();
         }
 
@@ -1617,10 +2406,8 @@ if (empty($_SESSION['user_id'])) {
             body.append('id', String(id));
 
             let payload;
-            try {
-                const response = await fetch(apiUrl, { method: 'POST', body });
-                payload = await response.json();
-            } catch (error) {
+            payload = await requestJson(apiUrl, { method: 'POST', body });
+            if (!payload.success && !payload.message) {
                 setUserFormFeedback('Could not contact the server while deleting the login user.', false);
                 showHardwareScreen('Could not contact the server while deleting the login user.', 'text-red-400');
                 return;
@@ -1629,7 +2416,45 @@ if (empty($_SESSION['user_id'])) {
             setUserFormFeedback(payload.message || '', !!payload.success);
             showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
             if (payload.success) {
+                selectedUserIds.delete(Number(id));
+                await fetchEmployees();
+                await fetchArchivedEmployees();
                 await fetchUsers();
+                updateLiveStats();
+            }
+        }
+
+        async function deleteSelectedUsers() {
+            if (!hasFullAccessRole) {
+                alert('Only admin, HR, and IT users can delete login accounts.');
+                return;
+            }
+            const ids = [...selectedUserIds];
+            if (ids.length === 0) {
+                alert('Select at least one user first.');
+                return;
+            }
+            const previewNames = users
+                .filter(user => ids.includes(Number(user.id)))
+                .map(user => String(user.username));
+            const preview = buildSelectionPreview(previewNames, 'user account(s)');
+            if (!confirm(`Delete ${ids.length} selected login account(s)? Linked staff profiles will also be deleted when the User ID matches a registered employee.\n\nSelected User IDs:\n${preview}`)) return;
+
+            const body = new URLSearchParams();
+            body.append('action', 'deleteUsers');
+            body.append('ids', JSON.stringify(ids));
+
+            const payload = await requestJson(apiUrl, { method: 'POST', body }, { isMutation: true, busyMessage: 'Deleting selected users...' });
+            setUserFormFeedback(payload.message || '', !!payload.success);
+            showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
+            if (payload.success) {
+                selectedUserIds = new Set();
+                await fetchEmployees();
+                await fetchArchivedEmployees();
+                await fetchUsers();
+                await renderAttendanceGrid();
+                await renderVehicleUsageGrid();
+                updateLiveStats();
             }
         }
 
@@ -1664,8 +2489,10 @@ if (empty($_SESSION['user_id'])) {
 
         async function deleteHoliday(date) {
             if (!confirm('Remove this holiday entry?')) return;
-            const response = await fetch(`${apiUrl}?action=deleteHoliday&date=${encodeURIComponent(date)}`);
-            const payload = await response.json();
+            const body = new URLSearchParams();
+            body.append('action', 'deleteHoliday');
+            body.append('date', date);
+            const payload = await requestJson(apiUrl, { method: 'POST', body }, { isMutation: true, busyMessage: 'Removing holiday...' });
             showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
             await fetchHolidays();
             await renderAttendanceGrid();
@@ -1675,8 +2502,7 @@ if (empty($_SESSION['user_id'])) {
             const start = document.getElementById('leave-filter-start').value;
             const end = document.getElementById('leave-filter-end').value;
             const department = document.getElementById('leave-filter-dept').value;
-            const response = await fetch(`${apiUrl}?action=listLeaveRequests&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&department=${encodeURIComponent(department)}`);
-            const payload = await response.json();
+            const payload = await requestJson(`${apiUrl}?action=listLeaveRequests&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&department=${encodeURIComponent(department)}`);
             const tbody = document.getElementById('leave-table-body');
             tbody.innerHTML = '';
             if (!payload.success || payload.leaveRequests.length === 0) {
@@ -1703,8 +2529,8 @@ if (empty($_SESSION['user_id'])) {
                     <td class="p-4"><span class="px-2 py-1 rounded text-xs font-bold ${statusClass}">${record.status}</span></td>
                     <td class="p-4 text-xs text-slate-700">${record.reason}</td>
                     <td class="p-4 text-right space-x-2">
-                        ${isViewerRole ? '<span class="text-slate-300 text-xs">View only</span>' : `<button onclick="editLeaveRequest(${record.id})" class="text-blue-600 hover:text-blue-950 font-semibold text-xs inline-flex items-center gap-1"><i data-lucide="edit-3" class="w-3.5 h-3.5"></i> Edit</button>
-                        <button onclick="deleteLeaveRequest(${record.id})" class="text-red-600 hover:text-red-950 font-semibold text-xs inline-flex items-center gap-1"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete</button>`}
+                        ${hasLeaveFormFullAccess ? `<button onclick="editLeaveRequest(${record.id})" class="text-blue-600 hover:text-blue-950 font-semibold text-xs inline-flex items-center gap-1"><i data-lucide="edit-3" class="w-3.5 h-3.5"></i> Edit</button>
+                        <button onclick="deleteLeaveRequest(${record.id})" class="text-red-600 hover:text-red-950 font-semibold text-xs inline-flex items-center gap-1"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete</button>` : '<span class="text-slate-300 text-xs">View only</span>'}
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -1728,8 +2554,8 @@ if (empty($_SESSION['user_id'])) {
                 alert('Please fill all required leave fields.');
                 return;
             }
-            if (isViewerRole && id > 0) {
-                alert('Only admin can edit leave requests.');
+            if (!hasLeaveFormFullAccess && id > 0) {
+                alert('Only admin/HR/IT/Manager can edit leave requests.');
                 return;
             }
 
@@ -1743,12 +2569,11 @@ if (empty($_SESSION['user_id'])) {
             body.append('startDate', startDate);
             body.append('endDate', endDate);
             body.append('leaveDays', String(leaveDays));
-            body.append('status', isViewerRole ? 'Pending' : status);
+            body.append('status', hasLeaveFormFullAccess ? status : 'Pending');
             body.append('reason', reason);
             body.append('remarks', remarks);
 
-            const response = await fetch(apiUrl, { method: 'POST', body });
-            const payload = await response.json();
+            const payload = await requestJson(apiUrl, { method: 'POST', body });
             showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
             if (payload.success) {
                 resetLeaveForm();
@@ -1757,6 +2582,10 @@ if (empty($_SESSION['user_id'])) {
         }
 
         function editLeaveRequest(id) {
+            if (!hasLeaveFormFullAccess) {
+                alert('Only admin/HR/IT/Manager can edit leave requests.');
+                return;
+            }
             const record = leaveRequests.find(item => Number(item.id) === Number(id));
             if (!record) return;
             document.getElementById('leave-form-id').value = String(record.id);
@@ -1775,9 +2604,15 @@ if (empty($_SESSION['user_id'])) {
         }
 
         async function deleteLeaveRequest(id) {
+            if (!hasLeaveFormFullAccess) {
+                alert('Only admin/HR/IT/Manager can delete leave requests.');
+                return;
+            }
             if (!confirm('Delete this leave request?')) return;
-            const response = await fetch(`${apiUrl}?action=deleteLeaveRequest&id=${encodeURIComponent(id)}`);
-            const payload = await response.json();
+            const body = new URLSearchParams();
+            body.append('action', 'deleteLeaveRequest');
+            body.append('id', String(id));
+            const payload = await requestJson(apiUrl, { method: 'POST', body }, { isMutation: true, busyMessage: 'Deleting leave request...' });
             showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
             if (payload.success) {
                 await renderLeaveGrid();
@@ -1796,8 +2631,7 @@ if (empty($_SESSION['user_id'])) {
             const start = document.getElementById('travel-filter-start').value;
             const end = document.getElementById('travel-filter-end').value;
             const department = document.getElementById('travel-filter-dept').value;
-            const response = await fetch(`${apiUrl}?action=listTravelOrders&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&department=${encodeURIComponent(department)}`);
-            const payload = await response.json();
+            const payload = await requestJson(`${apiUrl}?action=listTravelOrders&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&department=${encodeURIComponent(department)}`);
             const tbody = document.getElementById('travel-table-body');
             tbody.innerHTML = '';
             if (!payload.success || payload.travelOrders.length === 0) {
@@ -1868,8 +2702,7 @@ if (empty($_SESSION['user_id'])) {
             body.append('settlementApprovedBy', document.getElementById('travel-form-settlement-approved-by').value.trim());
             body.append('notes', document.getElementById('travel-form-notes').value.trim());
 
-            const response = await fetch(apiUrl, { method: 'POST', body });
-            const payload = await response.json();
+            const payload = await requestJson(apiUrl, { method: 'POST', body });
             showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
             if (payload.success) {
                 resetTravelForm();
@@ -1910,8 +2743,10 @@ if (empty($_SESSION['user_id'])) {
 
         async function deleteTravelOrder(id) {
             if (!confirm('Delete this travel form record?')) return;
-            const response = await fetch(`${apiUrl}?action=deleteTravelOrder&id=${encodeURIComponent(id)}`);
-            const payload = await response.json();
+            const body = new URLSearchParams();
+            body.append('action', 'deleteTravelOrder');
+            body.append('id', String(id));
+            const payload = await requestJson(apiUrl, { method: 'POST', body }, { isMutation: true, busyMessage: 'Deleting travel form...' });
             showHardwareScreen(payload.message, payload.success ? 'text-emerald-400' : 'text-red-400');
             if (payload.success) {
                 await renderTravelGrid();
@@ -1922,7 +2757,7 @@ if (empty($_SESSION['user_id'])) {
             document.getElementById('travel-form').reset();
             document.getElementById('travel-form-id').value = '';
             document.getElementById('travel-form-advance').value = '0';
-            document.getElementById('travel-form-date').value = new Date().toISOString().slice(0,10);
+            document.getElementById('travel-form-date').value = formatDateInputValue();
             document.getElementById('travel-form-title').innerHTML = '<i data-lucide="file-text" class="w-5 h-5 text-blue-600"></i> Travel Order Form';
             document.getElementById('travel-submit-btn').textContent = 'Save Travel Form';
             lucide.createIcons();
@@ -1942,6 +2777,10 @@ if (empty($_SESSION['user_id'])) {
             const end = document.getElementById('filter-end').value;
             const department = document.getElementById('filter-dept').value;
             const empId = document.getElementById('filter-emp').value;
+            if (!isValidDateRange(start, end)) {
+                alert('Please choose a valid attendance date range before exporting.');
+                return;
+            }
             window.location.href = `${apiUrl}?action=exportAttendance&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&department=${encodeURIComponent(department)}&empId=${encodeURIComponent(empId)}`;
         }
 
